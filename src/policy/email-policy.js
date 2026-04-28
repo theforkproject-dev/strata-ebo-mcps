@@ -103,6 +103,64 @@ export function verifyPolicyDecisionSubject(subject, signature, publicKeyPem) {
   };
 }
 
+export function verifyPolicyQuorumAuthority({ policyQuorum, registryEpoch, workflowId, policyHash, requiredTier = "policy" }) {
+  const errors = [];
+  const checks = [];
+  const registryByKey = new Map((registryEpoch?.witnesses || []).map((witness) => [witness.key_id, witness]));
+  const requiredRank = tierRank(requiredTier);
+
+  for (const decision of policyQuorum?.decisions || []) {
+    const keyId = decision.signature?.key_id || decision.key_id;
+    const witness = registryByKey.get(keyId);
+    const decisionErrors = [];
+
+    if (!witness) {
+      decisionErrors.push(`policy witness key ${keyId} is not in registry epoch ${registryEpoch?.epoch_id}`);
+    } else {
+      if (witness.witness_id !== decision.witness_id) {
+        decisionErrors.push(`witness_id mismatch for ${keyId}: decision=${decision.witness_id} registry=${witness.witness_id}`);
+      }
+      if (!isAuthorizedForWorkflow(witness, workflowId)) {
+        decisionErrors.push(`${keyId} is not authorized for workflow ${workflowId}`);
+      }
+      if (!isAuthorizedForPolicy(witness, policyHash)) {
+        decisionErrors.push(`${keyId} is not authorized for policy ${policyHash}`);
+      }
+      if (tierRank(witness.tier) < requiredRank) {
+        decisionErrors.push(`${keyId} tier ${witness.tier} is below required tier ${requiredTier}`);
+      }
+      decisionErrors.push(...authorizationTimeErrors(witness, decision.subject?.issued_at));
+      const signature = verifyPolicyDecisionSubject(decision.subject, decision.signature, witness.public_key_pem);
+      decisionErrors.push(...signature.errors);
+    }
+
+    checks.push({
+      witness_id: decision.witness_id,
+      key_id: keyId,
+      decision: decision.subject?.decision,
+      signing_time: decision.subject?.issued_at,
+      ok: decisionErrors.length === 0,
+      errors: decisionErrors
+    });
+    errors.push(...decisionErrors);
+  }
+
+  const authorizedCount = checks.filter((check) => check.ok).length;
+  if (authorizedCount < (policyQuorum?.threshold || 1)) {
+    errors.push(`policy quorum authorized threshold not met: ${authorizedCount}/${policyQuorum?.threshold || 1}`);
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    workflow_id: workflowId,
+    policy_hash: policyHash,
+    required_tier: requiredTier,
+    authorized_policy_witness_keys: checks.filter((check) => check.ok).map((check) => check.key_id),
+    checks
+  };
+}
+
 export async function collectPolicyQuorum({ witnesses, email, commitment, threshold = 2, fetchImpl = fetch }) {
   const policyBundle = defaultEmailPolicyBundle();
   const expectedPolicyDigest = policyBundleDigest(policyBundle);
@@ -181,4 +239,36 @@ function domainOf(address) {
   const mailbox = match ? match[1] : value;
   const at = mailbox.lastIndexOf("@");
   return at === -1 ? null : mailbox.slice(at + 1).toLowerCase();
+}
+
+const TIER_RANK = { mechanical: 1, policy: 2, domain: 3 };
+
+function tierRank(tier) {
+  return TIER_RANK[tier] || 0;
+}
+
+function isAuthorizedForWorkflow(witness, workflowId) {
+  return (witness.authorized_workflows || []).includes(workflowId);
+}
+
+function isAuthorizedForPolicy(witness, policyHash) {
+  return (witness.authorized_policy_hashes || []).includes(policyHash);
+}
+
+function authorizationTimeErrors(witness, signingTime) {
+  const errors = [];
+  if (!signingTime || Number.isNaN(Date.parse(signingTime))) {
+    return [`invalid signing time for ${witness.key_id}: ${signingTime}`];
+  }
+  const signedAt = new Date(signingTime).getTime();
+  if (witness.valid_from && signedAt < new Date(witness.valid_from).getTime()) {
+    errors.push(`${witness.key_id} was not valid until ${witness.valid_from}`);
+  }
+  if (witness.valid_until && signedAt >= new Date(witness.valid_until).getTime()) {
+    errors.push(`${witness.key_id} authorization expired at ${witness.valid_until}`);
+  }
+  if ((witness.status || "active") !== "active") {
+    errors.push(`${witness.key_id} status is ${witness.status}`);
+  }
+  return errors;
 }

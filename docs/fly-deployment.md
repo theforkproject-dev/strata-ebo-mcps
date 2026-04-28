@@ -15,12 +15,14 @@ Use seven Fly apps:
 - `strata-email-policy-witness-1`: Level 2 policy witness `p1`.
 - `strata-email-policy-witness-2`: Level 2 policy witness `p2`.
 - `strata-email-policy-witness-3`: Level 2 policy witness `p3`.
+- `strata-email-registry`: signed witness registry epoch service.
 
 Each app should have one persistent volume:
 
 - MCP volume stores certificates, key material, and recipient verification receipts.
 - L1 witness volumes store each witness key and WAL.
 - L2 policy witness volumes store each policy witness key.
+- Registry volume stores the registry authority signing key.
 
 ## Safety
 
@@ -44,6 +46,7 @@ Examples live in `deploy/fly/`:
 - `fly.policy-witness-1.toml.example`
 - `fly.policy-witness-2.toml.example`
 - `fly.policy-witness-3.toml.example`
+- `fly.registry.toml.example`
 
 Copy each to a real `fly.*.toml`, review app names, then deploy explicitly with `--config`.
 
@@ -63,10 +66,12 @@ Use `OAUTH_CONSENT_PASSWORD_SHA256` instead of `OAUTH_CONSENT_PASSWORD` if you d
 
 1. Create/deploy `strata-email-witness-1`, `strata-email-witness-2`, `strata-email-witness-3`.
 2. Create/deploy `strata-email-policy-witness-1`, `strata-email-policy-witness-2`, `strata-email-policy-witness-3`.
-3. Confirm each L1 witness returns `/health` and `/v1/public-key`.
-4. Confirm each L2 policy witness returns `/health`, `/v1/public-key`, and `/v1/policy`.
-5. Deploy `strata-email-mcp` with `WITNESS_URLS` and `POLICY_WITNESS_URLS` pointing at the six witness apps.
-6. Confirm MCP health and OAuth metadata:
+3. Create/deploy `strata-email-registry` with `WITNESS_URLS` and `POLICY_WITNESS_URLS` pointing at the six witness apps.
+4. Confirm each L1 witness returns `/health` and `/v1/public-key`.
+5. Confirm each L2 policy witness returns `/health`, `/v1/public-key`, and `/v1/policy`.
+6. Confirm registry returns `/registry/current` and `/registry/public-key`.
+7. Deploy `strata-email-mcp` with `WITNESS_URLS`, `POLICY_WITNESS_URLS`, and `REGISTRY_URL`.
+8. Confirm MCP health and OAuth metadata:
 
 ```bash
 curl https://strata-email-mcp.fly.dev/health

@@ -18,6 +18,7 @@ import {
   toolRequestDigest,
   verifyCheckpoint,
   verifySession,
+  verifyWitnessAuthority,
   writeCheckpoint
 } from "./primitives.js";
 import { EMAIL_COMMITMENT_VERSION, EMAIL_PAYLOAD_VERSION, canonicalizeEmailInput, emailCommitment } from "../email/canonical.js";
@@ -28,8 +29,10 @@ import {
   EMAIL_POLICY_DECISION_VERSION,
   collectPolicyQuorum,
   defaultEmailPolicyBundle,
-  policyBundleDigest
+  policyBundleDigest,
+  verifyPolicyQuorumAuthority
 } from "../policy/email-policy.js";
+import { fetchRegistryBinding } from "../registry/email-registry.js";
 
 export function createActionRegistry(config) {
   const policyBundle = defaultEmailPolicyBundle();
@@ -157,6 +160,7 @@ export async function gatewayStatus(config) {
   const healthyPolicyWitnesses = policyWitnessChecks.filter((witness) => witness.ok).length;
   const requiredWitnesses = 2;
   const policyBundle = defaultEmailPolicyBundle();
+  const registry = await safeRegistryStatus(config);
   return {
     status: healthyWitnesses >= requiredWitnesses && healthyPolicyWitnesses >= requiredWitnesses && config.email.provider ? "ready" : "not_ready",
     checked_at: new Date().toISOString(),
@@ -176,6 +180,7 @@ export async function gatewayStatus(config) {
       policy_bundle_digest: policyBundleDigest(policyBundle),
       rules: policyBundle.rules
     },
+    registry,
     policy_witness_signing: policyWitnessSigningSemantics(),
     receipt_flow: emailReceiptFlow(),
     denial_receipt_flow: policyDenialReceiptFlow(),
@@ -370,7 +375,10 @@ export async function runVerifiedEmailSend(input, config) {
     requireCheckpointTransparency: true
   });
   const ok = session.ok && checkpointResult.ok;
-  const verification = { ok, session, checkpoint: checkpointResult };
+  const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
+  const registryAuthority = registryBinding ? verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) : null;
+  const verified = ok && (!registryAuthority || registryAuthority.ok);
+  const verification = { ok: verified, session, checkpoint: checkpointResult, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
   const certificateBody = {
@@ -391,6 +399,7 @@ export async function runVerifiedEmailSend(input, config) {
       sent_at: toolResult.output.sent_at
     },
     commitment: publicCommitment,
+    registry: registryCertificateBinding(registryBinding),
     policy: {
       tier: "level-2-policy",
       decision: policyQuorum.decision,
@@ -409,21 +418,21 @@ export async function runVerifiedEmailSend(input, config) {
       receipt_count: receipts.length,
       checkpoint_id: checkpoint.statement.checkpoint_id,
       receipt_root: session.finalStateRoot,
-      verified: ok
+      verified
     },
     artifacts: {
       ...publicArtifactUrls(config, runId),
       certificate: certificateUrl,
       bundle: `${certificateUrl}/bundle`
     },
-    errors: [...session.errors, ...checkpointResult.errors]
+    errors: [...session.errors, ...checkpointResult.errors, ...(registryAuthority?.errors || [])]
   };
   const certificateDigest = digestValue(certificateBody);
   const certificate = { ...certificateBody, certificate_digest: certificateDigest };
   writeJson(paths.certificate, certificate);
 
   return {
-    ok,
+    ok: verified,
     run_id: runId,
     out_dir: outDir,
     certificate_ref: certificateUrl,
@@ -432,6 +441,8 @@ export async function runVerifiedEmailSend(input, config) {
     certificate_digest: certificateDigest,
     tool_output: toolResult.output,
     policy_quorum: policyQuorum,
+    registry: registryCertificateBinding(registryBinding),
+    registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
     certificate_transmission: {
       in_band_headers: toolResult.output.headers_committed,
@@ -460,7 +471,8 @@ export async function runVerifiedEmailSend(input, config) {
       checkpoint: paths.checkpoint,
       transparency_log: paths.transparencyLog,
       verification: paths.verification,
-      policy_decision: paths.policyDecision
+      policy_decision: paths.policyDecision,
+      registry_epoch: paths.registryEpoch
     },
     errors: certificate.errors
   };
@@ -558,7 +570,10 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
     requireCheckpointTransparency: true
   });
   const ok = session.ok && checkpointResult.ok && policyQuorum.decision === "deny";
-  const verification = { ok, session, checkpoint: checkpointResult, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum } };
+  const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
+  const registryAuthority = registryBinding ? verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) : null;
+  const verified = ok && (!registryAuthority || registryAuthority.ok);
+  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum }, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
   const certificateBody = {
@@ -575,6 +590,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
       method: "POST /v1/send-email"
     },
     commitment: publicCommitment,
+    registry: registryCertificateBinding(registryBinding),
     policy: {
       tier: "level-2-policy",
       decision: policyQuorum.decision,
@@ -595,7 +611,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
       checkpoint_id: checkpoint.statement.checkpoint_id,
       receipt_root: session.finalStateRoot,
       side_effect_executed: false,
-      verified: ok
+      verified
     },
     denial_receipt_flow: policyDenialReceiptFlow(),
     artifacts: {
@@ -603,7 +619,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
       certificate: certificateUrl,
       bundle: `${certificateUrl}/bundle`
     },
-    errors: [...session.errors, ...checkpointResult.errors]
+    errors: [...session.errors, ...checkpointResult.errors, ...(registryAuthority?.errors || [])]
   };
   const certificateDigest = digestValue(certificateBody);
   const certificate = { ...certificateBody, certificate_digest: certificateDigest };
@@ -616,6 +632,8 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
     run_id: runId,
     out_dir: outDir,
     policy_quorum: policyQuorum,
+    registry: registryCertificateBinding(registryBinding),
+    registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
     commitment: publicCommitment,
     certificate_ref: certificateUrl,
@@ -639,7 +657,8 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
       checkpoint: paths.checkpoint,
       transparency_log: paths.transparencyLog,
       verification: paths.verification,
-      policy_decision: paths.policyDecision
+      policy_decision: paths.policyDecision,
+      registry_epoch: paths.registryEpoch
     },
     errors: [`L2 policy denied email send: ${policyQuorum.deny_reasons.join(", ") || "policy quorum not met"}`]
   };
@@ -824,7 +843,8 @@ function artifactPaths(config, outDir) {
     transparencyLog: join(outDir, "transparency-log.jsonl"),
     verification: join(outDir, "verification.json"),
     certificate: join(outDir, "certificate.json"),
-    policyDecision: join(outDir, "policy-decision.json")
+    policyDecision: join(outDir, "policy-decision.json"),
+    registryEpoch: join(outDir, "registry-epoch.json")
   };
 }
 
@@ -836,7 +856,8 @@ function publicArtifactUrls(config, runId) {
     checkpoint: `${baseUrl}/checkpoint.json`,
     transparency_log: `${baseUrl}/transparency-log.jsonl`,
     verification: `${baseUrl}/verification.json`,
-    policy_decision: `${baseUrl}/policy-decision.json`
+    policy_decision: `${baseUrl}/policy-decision.json`,
+    registry_epoch: `${baseUrl}/registry-epoch.json`
   };
 }
 
@@ -940,6 +961,89 @@ function policyQuorumInput(policyQuorum) {
   };
 }
 
+async function loadAndWriteRegistryBinding(config, registryEpochPath) {
+  if (!config.registry?.url) {
+    return null;
+  }
+  const binding = await fetchRegistryBinding(config.registry.url);
+  writeJson(registryEpochPath, {
+    registry_epoch: binding.epoch,
+    registry_epoch_digest: binding.epoch_digest,
+    registry_epoch_url: binding.epoch_url,
+    registry_trust_anchor: binding.trust_anchor,
+    verification: binding.verification
+  });
+  return binding;
+}
+
+function registryCertificateBinding(registryBinding) {
+  if (!registryBinding) {
+    return null;
+  }
+  return {
+    registry_epoch_id: registryBinding.epoch.epoch_id,
+    registry_epoch_digest: registryBinding.epoch_digest,
+    registry_epoch_url: registryBinding.epoch_url,
+    registry_authority_key_id: registryBinding.trust_anchor.key_id
+  };
+}
+
+function verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) {
+  const trustAnchors = { [registryBinding.trust_anchor.key_id]: registryBinding.trust_anchor.public_key_pem };
+  const l1Mechanical = verifyWitnessAuthority({
+    receipts,
+    checkpoint,
+    keyring,
+    registryEpoch: registryBinding.epoch,
+    trustAnchors,
+    workflowId: "email.send",
+    policyHash: policyQuorum.policy_bundle_digest,
+    requiredTier: "mechanical"
+  });
+  const l2Policy = verifyPolicyQuorumAuthority({
+    policyQuorum,
+    registryEpoch: registryBinding.epoch,
+    workflowId: "email.send",
+    policyHash: policyQuorum.policy_bundle_digest,
+    requiredTier: "policy"
+  });
+  const errors = [
+    ...registryBinding.verification.errors.map((error) => `registry epoch: ${error}`),
+    ...l1Mechanical.errors.map((error) => `l1 mechanical: ${error}`),
+    ...l2Policy.errors.map((error) => `l2 policy: ${error}`)
+  ];
+  return {
+    ok: errors.length === 0,
+    errors,
+    registry_epoch_digest: registryBinding.epoch_digest,
+    registry_epoch_id: registryBinding.epoch.epoch_id,
+    registry_epoch_url: registryBinding.epoch_url,
+    registry_authority_key_id: registryBinding.trust_anchor.key_id,
+    l1_mechanical: l1Mechanical,
+    l2_policy: l2Policy
+  };
+}
+
+async function safeRegistryStatus(config) {
+  if (!config.registry?.url) {
+    return { configured: false };
+  }
+  try {
+    const binding = await fetchRegistryBinding(config.registry.url);
+    return {
+      configured: true,
+      ok: binding.verification.ok,
+      registry_epoch_id: binding.epoch.epoch_id,
+      registry_epoch_digest: binding.epoch_digest,
+      registry_epoch_url: binding.epoch_url,
+      registry_authority_key_id: binding.trust_anchor.key_id,
+      errors: binding.verification.errors
+    };
+  } catch (error) {
+    return { configured: true, ok: false, error: error.message };
+  }
+}
+
 function createEgressPolicy(config) {
   const allowedUrls = [...config.witnesses, ...config.policyWitnesses].map((witness) => witness.url);
   if (config.email.provider === "resend") {
@@ -1007,7 +1111,8 @@ function resolveArtifactRef(ref, config) {
         "checkpoint.json": "checkpoint.json",
         "transparency-log.jsonl": "transparency-log.jsonl",
         "verification.json": "verification.json",
-        "policy-decision.json": "policy-decision.json"
+        "policy-decision.json": "policy-decision.json",
+        "registry-epoch.json": "registry-epoch.json"
       };
       if (artifactMap[artifactName]) {
         return join(config.dataDir, "runs", runId, artifactMap[artifactName]);

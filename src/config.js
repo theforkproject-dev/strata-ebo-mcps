@@ -34,6 +34,9 @@ export function loadConfig(env = process.env) {
       refreshTokenTtlMs: Number(env.OAUTH_REFRESH_TOKEN_TTL_SECONDS || 30 * 24 * 3600) * 1000,
       codeTtlMs: Number(env.OAUTH_CODE_TTL_SECONDS || 600) * 1000
     },
+    registry: {
+      url: trimSlash(env.REGISTRY_URL || "")
+    },
     witnesses: parseWitnessUrls(env.WITNESS_URLS || "", "w"),
     policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p")
   };

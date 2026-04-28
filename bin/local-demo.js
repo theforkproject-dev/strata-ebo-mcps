@@ -10,6 +10,7 @@ const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8899);
 const witnessPorts = [9101, 9102, 9103];
 const policyWitnessPorts = [9201, 9202, 9203];
+const registryPort = 9301;
 const children = [];
 
 mkdirSync(dataDir, { recursive: true });
@@ -17,7 +18,8 @@ mkdirSync(dataDir, { recursive: true });
 try {
   const witnessUrls = await startWitnesses();
   const policyWitnessUrls = await startPolicyWitnesses();
-  const server = startServer(witnessUrls, policyWitnessUrls);
+  const registryUrl = await startRegistry(witnessUrls, policyWitnessUrls);
+  const server = startServer(witnessUrls, policyWitnessUrls, registryUrl);
   children.push(server);
   await waitForHealth(`http://${host}:${port}/health`);
 
@@ -131,7 +133,27 @@ async function startPolicyWitnesses() {
   return urls.join(",");
 }
 
-function startServer(witnessUrls, policyWitnessUrls) {
+async function startRegistry(witnessUrls, policyWitnessUrls) {
+  const child = spawn(process.execPath, [join(root, "bin", "registry-server.js")], {
+    cwd: root,
+    env: {
+      ...process.env,
+      HOST: host,
+      PORT: String(registryPort),
+      DATA_DIR: dataDir,
+      REGISTRY_KEY_FILE: join(dataDir, "registry", "registry-authority.key.json"),
+      WITNESS_URLS: witnessUrls,
+      POLICY_WITNESS_URLS: policyWitnessUrls
+    },
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  children.push(child);
+  child.stderr.on("data", (chunk) => process.stderr.write(chunk));
+  const info = await waitForJsonLine(child.stdout);
+  return info.url;
+}
+
+function startServer(witnessUrls, policyWitnessUrls, registryUrl) {
   const env = {
     ...process.env,
     HOST: host,
@@ -143,6 +165,7 @@ function startServer(witnessUrls, policyWitnessUrls) {
     CERTIFICATE_BASE_URL: `http://${host}:${port}/certificates`,
     WITNESS_URLS: witnessUrls,
     POLICY_WITNESS_URLS: policyWitnessUrls,
+    REGISTRY_URL: registryUrl,
     MCP_SESSION_SECRET: process.env.MCP_SESSION_SECRET || "local-demo-session-secret-32-bytes-minimum"
   };
   const child = spawn(process.execPath, [join(root, "src", "server.js")], {

@@ -15,11 +15,16 @@ export const {
   loadOrCreateEd25519Signer,
   sha256Hex,
   signEd25519,
+  signWitnessRegistryEpoch,
   signReceipt,
   toolRequestDigest,
   verifyCapability,
   verifyCheckpoint,
   verifyEd25519,
+  verifyWitnessAuthority,
+  verifyWitnessRegistryEpoch,
+  witnessRegistryEpochDigest,
+  WITNESS_REGISTRY_EPOCH_VERSION,
   verifySession,
   writeCheckpoint
 } = strataModule;

@@ -1,4 +1,4 @@
-app = "strata-email-mcp"
+app = "strata-email-registry"
 primary_region = "iad"
 
 [build]
@@ -7,23 +7,21 @@ primary_region = "iad"
 [env]
   HOST = "0.0.0.0"
   PORT = "8080"
-  EMAIL_PROVIDER = "resend"
-  EMAIL_FROM = "strata-mcp@theforkproject.com"
-  DATA_DIR = "/data/email-mcp"
-  PUBLIC_BASE_URL = "https://strata-email-mcp.fly.dev"
-  CERTIFICATE_BASE_URL = "https://strata-email-mcp.fly.dev/certificates"
-  OAUTH_ISSUER = "https://strata-email-mcp.fly.dev"
-  OAUTH_STORE_PATH = "/data/email-mcp/oauth-store.json"
+  REGISTRY_KEY_ID = "registry-authority:email-demo"
+  REGISTRY_KEY_FILE = "/data/registry-authority.key.json"
   WITNESS_URLS = "w1=https://strata-email-witness-1.fly.dev,w2=https://strata-email-witness-2.fly.dev,w3=https://strata-email-witness-3.fly.dev"
   POLICY_WITNESS_URLS = "p1=https://strata-email-policy-witness-1.fly.dev,p2=https://strata-email-policy-witness-2.fly.dev,p3=https://strata-email-policy-witness-3.fly.dev"
-  REGISTRY_URL = "https://strata-email-registry.fly.dev"
 
 [[mounts]]
-  source = "strata_email_mcp_data"
+  source = "strata_email_registry_data"
   destination = "/data"
+
+[processes]
+  app = "node /app/bin/registry-server.js"
 
 [http_service]
   internal_port = 8080
+  processes = ["app"]
   force_https = true
   auto_stop_machines = false
   auto_start_machines = true

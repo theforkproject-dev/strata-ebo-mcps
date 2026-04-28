@@ -32,6 +32,17 @@ The active policy bundle is `strata.email.policy_bundle.v1` / `email-policy-epoc
 
 Each policy witness signs a `strata.email.policy_decision.v1` allow or deny decision over the exact commitment digest and policy epoch. The gateway requires 2-of-3 allow decisions before it asks the L1 gateway witnesses to sign the `IntentGrant`.
 
+## Registry
+
+The demo registry is a separate service from the MCP gateway. It exposes:
+
+- `GET /health`
+- `GET /registry/public-key`
+- `GET /registry/current`
+- `GET /registry/epochs/email-demo-epoch-001`
+
+The registry signs a `turnstile.witness-registry-epoch.v1` object authorizing the six witness keys for workflow `email.send` and the active policy bundle digest. Certificates include the registry epoch id, digest, URL, and authority key id. Certificate bundles include `registry_epoch.json` so downstream verifiers can check witness authority at signing time.
+
 ## Recipient Verification
 
 `email_verify_received` models the downstream verification loop. A recipient or recipient-side agent provides the received canonical email fields plus a certificate ref. The tool recomputes the digest, verifies the Strata receipt chain/checkpoint, compares the payload digest, and writes a signed verification receipt.
@@ -55,6 +66,7 @@ The public certificate endpoint exposes both the certificate summary and a compl
 
 - `GET /certificates/:id` returns `certificate.json`.
 - `GET /certificates/:id/bundle` returns certificate, receipt log, keyring, checkpoint, transparency log, verification result, policy decision, and matching recipient verification receipts.
+- The bundle also contains the signed registry epoch used to authorize witness keys at signing time.
 - `GET /certificates/:id/artifacts/:name` exposes individual artifacts for tooling that wants streaming or partial retrieval.
 
 `email_verify_received` accepts the received canonical email fields as a typed object. It also accepts optional `headers` for recipient clients that can access custom mail headers. If `X-Strata-*` headers are supplied, the verifier checks them against the certificate metadata; if they are absent, content/certificate verification still proceeds because some mail APIs hide custom headers.
