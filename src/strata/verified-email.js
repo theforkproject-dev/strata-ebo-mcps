@@ -377,6 +377,7 @@ export async function runVerifiedEmailSend(input, config) {
     version: "strata.email.certificate.v1",
     run_id: runId,
     certificate_url: certificateUrl,
+    bundle_url: `${certificateUrl}/bundle`,
     issued_at: new Date().toISOString(),
     action: {
       mcp_tool_name: "email_send_verified",
@@ -411,12 +412,9 @@ export async function runVerifiedEmailSend(input, config) {
       verified: ok
     },
     artifacts: {
-      receipts: fileRef(paths.receipts),
-      keyring: fileRef(paths.keyring),
-      checkpoint: fileRef(paths.checkpoint),
-      transparency_log: fileRef(paths.transparencyLog),
-      verification: fileRef(paths.verification),
-      policy_decision: fileRef(paths.policyDecision)
+      ...publicArtifactUrls(config, runId),
+      certificate: certificateUrl,
+      bundle: `${certificateUrl}/bundle`
     },
     errors: [...session.errors, ...checkpointResult.errors]
   };
@@ -428,8 +426,9 @@ export async function runVerifiedEmailSend(input, config) {
     ok,
     run_id: runId,
     out_dir: outDir,
-    certificate_ref: fileRef(outDir),
+    certificate_ref: certificateUrl,
     certificate_url: certificateUrl,
+    bundle_url: `${certificateUrl}/bundle`,
     certificate_digest: certificateDigest,
     tool_output: toolResult.output,
     policy_quorum: policyQuorum,
@@ -450,6 +449,11 @@ export async function runVerifiedEmailSend(input, config) {
     checkpoint_id: checkpoint.statement.checkpoint_id,
     final_state_root: session.finalStateRoot,
     artifacts: {
+      ...publicArtifactUrls(config, runId),
+      certificate: certificateUrl,
+      bundle: `${certificateUrl}/bundle`
+    },
+    local_artifacts: {
       certificate: paths.certificate,
       receipts: paths.receipts,
       keyring: paths.keyring,
@@ -561,6 +565,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
     version: "strata.email.policy_denial_certificate.v1",
     run_id: runId,
     certificate_url: certificateUrl,
+    bundle_url: `${certificateUrl}/bundle`,
     issued_at: new Date().toISOString(),
     denied: true,
     denial_stage: "level-2-policy",
@@ -594,12 +599,9 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
     },
     denial_receipt_flow: policyDenialReceiptFlow(),
     artifacts: {
-      receipts: fileRef(paths.receipts),
-      keyring: fileRef(paths.keyring),
-      checkpoint: fileRef(paths.checkpoint),
-      transparency_log: fileRef(paths.transparencyLog),
-      verification: fileRef(paths.verification),
-      policy_decision: fileRef(paths.policyDecision)
+      ...publicArtifactUrls(config, runId),
+      certificate: certificateUrl,
+      bundle: `${certificateUrl}/bundle`
     },
     errors: [...session.errors, ...checkpointResult.errors]
   };
@@ -616,8 +618,9 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
     policy_quorum: policyQuorum,
     policy_witness_signing: policyWitnessSigningSemantics(),
     commitment: publicCommitment,
-    certificate_ref: fileRef(outDir),
+    certificate_ref: certificateUrl,
     certificate_url: certificateUrl,
+    bundle_url: `${certificateUrl}/bundle`,
     certificate_digest: certificateDigest,
     tool_output: null,
     receipt_count: receipts.length,
@@ -625,6 +628,11 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
     final_state_root: session.finalStateRoot,
     denial_receipt_flow: policyDenialReceiptFlow(),
     artifacts: {
+      ...publicArtifactUrls(config, runId),
+      certificate: certificateUrl,
+      bundle: `${certificateUrl}/bundle`
+    },
+    local_artifacts: {
       certificate: paths.certificate,
       receipts: paths.receipts,
       keyring: paths.keyring,
@@ -647,7 +655,7 @@ export function verifyReceivedEmail(input, config) {
   const receivedHeaders = normalizeHeaders(received.headers);
   const headerVerification = verifyStrataHeaders(receivedHeaders, certificate, input.certificate_ref);
   const contentMatch = publicCommitment.payload_digest === certificate.commitment.payload_digest;
-  const artifacts = resolveArtifacts(certificate.artifacts);
+  const artifacts = resolveArtifacts(certificate.artifacts, config);
   const receipts = readJsonl(artifacts.receipts);
   const keyring = JSON.parse(readFileSync(artifacts.keyring, "utf8"));
   const checkpoint = JSON.parse(readFileSync(artifacts.checkpoint, "utf8"));
@@ -820,6 +828,18 @@ function artifactPaths(config, outDir) {
   };
 }
 
+function publicArtifactUrls(config, runId) {
+  const baseUrl = `${config.certificateBaseUrl}/${runId}/artifacts`;
+  return {
+    receipts: `${baseUrl}/receipts.jsonl`,
+    keyring: `${baseUrl}/keyring.json`,
+    checkpoint: `${baseUrl}/checkpoint.json`,
+    transparency_log: `${baseUrl}/transparency-log.jsonl`,
+    verification: `${baseUrl}/verification.json`,
+    policy_decision: `${baseUrl}/policy-decision.json`
+  };
+}
+
 function loadGatewayKeys(config) {
   const keyDir = join(config.dataDir, "keys");
   mkdirSync(keyDir, { recursive: true });
@@ -954,7 +974,7 @@ function resolveCertificatePath(ref, config) {
   if (ref.startsWith("file://")) {
     path = fileURLToPath(ref);
   } else if (ref.startsWith(config.certificateBaseUrl)) {
-    const runId = ref.slice(config.certificateBaseUrl.length).replace(/^\//, "");
+    const runId = ref.slice(config.certificateBaseUrl.length).replace(/^\//, "").split("/")[0];
     path = join(config.dataDir, "runs", runId);
   } else {
     path = ref;
@@ -965,8 +985,36 @@ function resolveCertificatePath(ref, config) {
   return path;
 }
 
-function resolveArtifacts(artifacts) {
-  return Object.fromEntries(Object.entries(artifacts).map(([key, ref]) => [key, ref.startsWith("file://") ? fileURLToPath(ref) : ref]));
+function resolveArtifacts(artifacts, config) {
+  return Object.fromEntries(Object.entries(artifacts).map(([key, ref]) => [key, resolveArtifactRef(ref, config)]));
+}
+
+function resolveArtifactRef(ref, config) {
+  if (typeof ref !== "string") {
+    return ref;
+  }
+  if (ref.startsWith("file://")) {
+    return fileURLToPath(ref);
+  }
+  const artifactPrefix = `${config.certificateBaseUrl}/`;
+  if (ref.startsWith(artifactPrefix)) {
+    const parts = ref.slice(artifactPrefix.length).split("/");
+    const [runId, section, artifactName] = parts;
+    if (section === "artifacts" && artifactName) {
+      const artifactMap = {
+        "receipts.jsonl": "receipts.jsonl",
+        "keyring.json": "keyring.json",
+        "checkpoint.json": "checkpoint.json",
+        "transparency-log.jsonl": "transparency-log.jsonl",
+        "verification.json": "verification.json",
+        "policy-decision.json": "policy-decision.json"
+      };
+      if (artifactMap[artifactName]) {
+        return join(config.dataDir, "runs", runId, artifactMap[artifactName]);
+      }
+    }
+  }
+  return ref;
 }
 
 function withoutDigest(certificate) {

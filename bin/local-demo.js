@@ -61,10 +61,11 @@ try {
   const recipientVerification = await client.call("tools/call", {
     name: "email_verify_received",
     arguments: {
-      certificate_ref: sendResult.certificate_ref,
+      certificate_ref: sendResult.bundle_url,
       received: receivedEmail
     }
   });
+  const bundle = await fetch(sendResult.bundle_url).then((response) => response.json());
 
   console.log(JSON.stringify({
     ok: true,
@@ -75,6 +76,12 @@ try {
     preview: preview.result.structuredContent,
     send: sendResult,
     certificate_resource_bytes: certificate.result.contents[0].text.length,
+    bundle: {
+      version: bundle.version,
+      receipt_count: bundle.receipts.length,
+      has_keyring: Boolean(bundle.keyring),
+      has_policy_decision: Boolean(bundle.policy_decision)
+    },
     recipient_verification: recipientVerification.result.structuredContent
   }, null, 2));
 } finally {

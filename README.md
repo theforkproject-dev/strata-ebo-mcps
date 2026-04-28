@@ -125,6 +125,14 @@ The certificate reference is transmitted two ways:
 - In-band email headers: `X-Strata-Action-Id`, `X-Strata-Payload-Digest`, `X-Strata-Certificate-URL`, `X-Strata-Witness-Tier`.
 - MCP result fields: `certificate_url`, `certificate_digest`, `payload_digest`, `receipt_root`, `checkpoint_id`.
 
+Each certificate URL also exposes a verifier-ready bundle:
+
+```text
+GET /certificates/:id/bundle
+```
+
+The bundle contains `certificate`, `receipts`, `keyring`, `checkpoint`, `transparency_log`, `verification`, `policy_decision`, and any matching `recipient_verifications`. Individual artifacts are also exposed under `/certificates/:id/artifacts/...`.
+
 Tags are intentionally flat `Record<string,string>` for MCP schema compatibility. Use flattened conventions like `conversation_id`, `turn_id`, `skill_name`, or `case_id`; nested provenance can be added later if needed.
 
 ## Receipt Count And Action Grant Semantics

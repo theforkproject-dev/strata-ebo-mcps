@@ -79,6 +79,7 @@ export class EmailMcpServer {
           provider_status: run.tool_output?.provider_status || null,
           certificate_ref: run.certificate_ref,
           certificate_url: run.certificate_url,
+          bundle_url: run.bundle_url,
           certificate_digest: run.certificate_digest,
           action_id: run.tool_output?.action_id || null,
           action_id_semantics: "pre-send IntentGrant grant_id authorizing this exact email send",

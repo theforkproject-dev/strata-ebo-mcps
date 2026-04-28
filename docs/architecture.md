@@ -51,6 +51,12 @@ The email adapter commits the certificate reference into the outbound message us
 
 The same metadata is returned in the MCP tool result, so an agent can show the sender the certificate immediately while a recipient-side verifier can extract the header from the received message.
 
+The public certificate endpoint exposes both the certificate summary and a complete verifier-ready bundle:
+
+- `GET /certificates/:id` returns `certificate.json`.
+- `GET /certificates/:id/bundle` returns certificate, receipt log, keyring, checkpoint, transparency log, verification result, policy decision, and matching recipient verification receipts.
+- `GET /certificates/:id/artifacts/:name` exposes individual artifacts for tooling that wants streaming or partial retrieval.
+
 `email_verify_received` accepts the received canonical email fields as a typed object. It also accepts optional `headers` for recipient clients that can access custom mail headers. If `X-Strata-*` headers are supplied, the verifier checks them against the certificate metadata; if they are absent, content/certificate verification still proceeds because some mail APIs hide custom headers.
 
 `gateway_status` exposes protocol/schema versions, including `commitment_schema_version`, so agents can detect the expected canonicalization contract before producing or comparing digests.

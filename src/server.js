@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { EmailMcpServer, MCP_PROTOCOL_VERSION } from "./mcp-server.js";
@@ -182,16 +182,100 @@ function bearerToken(request) {
 }
 
 function serveCertificate(request, response) {
-  const runId = decodeURIComponent(request.url.slice("/certificates/".length).split("?")[0]);
+  const url = new URL(request.url, config.publicBaseUrl);
+  const parts = url.pathname.split("/").filter(Boolean);
+  const runId = decodeURIComponent(parts[1] || "");
   if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
     return json(response, 400, { error: "invalid certificate id" });
   }
-  const path = join(config.dataDir, "runs", runId, "certificate.json");
-  if (!existsSync(path)) {
+  const runDir = join(config.dataDir, "runs", runId);
+  const certificatePath = join(runDir, "certificate.json");
+  if (!existsSync(certificatePath)) {
     return json(response, 404, { error: "certificate not found" });
   }
+
+  if (parts.length === 3 && parts[2] === "bundle") {
+    return json(response, 200, loadCertificateBundle(runId, runDir));
+  }
+
+  if (parts.length === 4 && parts[2] === "artifacts") {
+    return serveCertificateArtifact(response, runDir, parts[3]);
+  }
+
+  if (parts.length !== 2) {
+    return json(response, 404, { error: "certificate route not found" });
+  }
+
   response.writeHead(200, { "content-type": "application/json" });
-  response.end(readFileSync(path, "utf8"));
+  response.end(readFileSync(certificatePath, "utf8"));
+}
+
+function serveCertificateArtifact(response, runDir, artifactName) {
+  const artifactMap = {
+    "receipts.jsonl": { path: "receipts.jsonl", type: "application/jsonl" },
+    "keyring.json": { path: "keyring.json", type: "application/json" },
+    "checkpoint.json": { path: "checkpoint.json", type: "application/json" },
+    "transparency-log.jsonl": { path: "transparency-log.jsonl", type: "application/jsonl" },
+    "verification.json": { path: "verification.json", type: "application/json" },
+    "policy-decision.json": { path: "policy-decision.json", type: "application/json" }
+  };
+  const artifact = artifactMap[artifactName];
+  if (!artifact) {
+    return json(response, 404, { error: "artifact not found" });
+  }
+  const artifactPath = join(runDir, artifact.path);
+  if (!existsSync(artifactPath)) {
+    return json(response, 404, { error: "artifact not found" });
+  }
+  response.writeHead(200, { "content-type": artifact.type });
+  response.end(readFileSync(artifactPath, "utf8"));
+}
+
+function loadCertificateBundle(runId, runDir) {
+  const certificate = readJson(join(runDir, "certificate.json"));
+  return {
+    version: "strata.email.certificate_bundle.v1",
+    run_id: runId,
+    bundle_url: `${config.certificateBaseUrl}/${runId}/bundle`,
+    certificate,
+    receipts: readJsonl(join(runDir, "receipts.jsonl")),
+    keyring: readJson(join(runDir, "keyring.json")),
+    checkpoint: readJson(join(runDir, "checkpoint.json")),
+    transparency_log: readJsonl(join(runDir, "transparency-log.jsonl")),
+    verification: readJson(join(runDir, "verification.json")),
+    policy_decision: readOptionalJson(join(runDir, "policy-decision.json")),
+    recipient_verifications: loadRecipientVerifications(certificate, runId)
+  };
+}
+
+function loadRecipientVerifications(certificate, runId) {
+  const dir = join(config.dataDir, "recipient-verifications");
+  if (!existsSync(dir)) {
+    return [];
+  }
+  return readdirSync(dir)
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => readOptionalJson(join(dir, file)))
+    .filter(Boolean)
+    .filter((receipt) => receipt.certificate_digest === certificate.certificate_digest || String(receipt.certificate_ref || "").includes(runId));
+}
+
+function readJson(path) {
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function readOptionalJson(path) {
+  if (!existsSync(path)) {
+    return null;
+  }
+  return readJson(path);
+}
+
+function readJsonl(path) {
+  if (!existsSync(path)) {
+    return [];
+  }
+  return readFileSync(path, "utf8").split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line));
 }
 
 function setProtocolHeaders(response) {
