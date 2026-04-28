@@ -6,7 +6,7 @@ export const MCP_PROTOCOL_VERSION = "2025-11-25";
 export class EmailMcpServer {
   constructor(config) {
     this.config = config;
-    this.actionRegistry = createActionRegistry(config);
+    this.actionRegistryPromise = null;
     this.latestCertificate = null;
     this.latestRecipientVerification = null;
   }
@@ -18,7 +18,7 @@ export class EmailMcpServer {
       case "ping":
         return {};
       case "tools/list":
-        return { tools: this.actionRegistry.tools };
+        return { tools: (await this.getActionRegistry()).tools };
       case "tools/call":
         return this.callTool(request.params || {});
       case "resources/list":
@@ -87,6 +87,7 @@ export class EmailMcpServer {
           witness_quorum: "2-of-3",
           verification_tiers: ["level-1-mechanical", "level-2-policy"],
           policy_quorum: run.policy_quorum,
+          policy_bundle: run.policy_bundle,
           registry: run.registry,
           registry_authority: run.registry_authority,
           receipt_count: run.receipt_count,
@@ -156,9 +157,9 @@ export class EmailMcpServer {
     return resources;
   }
 
-  readResource(uri) {
+  async readResource(uri) {
     if (uri === "strata://action-registry/current") {
-      return resource(uri, this.actionRegistry);
+      return resource(uri, await this.getActionRegistry());
     }
     if (uri === "strata://certificate/latest" && this.latestCertificate) {
       return resource(uri, this.latestCertificate);
@@ -167,6 +168,18 @@ export class EmailMcpServer {
       return resource(uri, this.latestRecipientVerification);
     }
     throw rpcError(-32602, `Resource not found: ${uri}`);
+  }
+
+  async getActionRegistry() {
+    if (!this.actionRegistryPromise) {
+      this.actionRegistryPromise = createActionRegistry(this.config);
+    }
+    try {
+      return await this.actionRegistryPromise;
+    } catch (error) {
+      this.actionRegistryPromise = null;
+      throw error;
+    }
   }
 }
 

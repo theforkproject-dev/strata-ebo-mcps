@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ActionGateway,
@@ -27,16 +27,19 @@ import { createEmailTool } from "../email/tool.js";
 import {
   EMAIL_POLICY_BUNDLE_VERSION,
   EMAIL_POLICY_DECISION_VERSION,
+  EMAIL_POLICY_POINTER_VERSION,
   collectPolicyQuorum,
-  defaultEmailPolicyBundle,
+  loadEmailPolicyBundle,
+  policyBundleMetadata,
   policyBundleDigest,
   verifyPolicyQuorumAuthority
 } from "../policy/email-policy.js";
 import { fetchRegistryBinding } from "../registry/email-registry.js";
 
-export function createActionRegistry(config) {
-  const policyBundle = defaultEmailPolicyBundle();
+export async function createActionRegistry(config) {
+  const policyBundle = await loadConfiguredPolicyBundle(config);
   const policyHash = policyBundleDigest(policyBundle);
+  const policyUrl = configuredPolicyUrl(config, policyBundle);
   return {
     version: "strata.action-registry.v1",
     registry_id: "action-registry.email-mcp",
@@ -135,6 +138,7 @@ export function createActionRegistry(config) {
           policy_bundle_hash: policyHash,
           policy_bundle_version: policyBundle.version,
           policy_epoch_id: policyBundle.epoch_id,
+          policy_url: policyUrl || null,
           policy_summary: policyBundle.rules
         },
         adapter: { adapter_id: "resend-email-api", implementation: "Strata email adapter" },
@@ -159,7 +163,8 @@ export async function gatewayStatus(config) {
   const healthyWitnesses = witnessChecks.filter((witness) => witness.ok).length;
   const healthyPolicyWitnesses = policyWitnessChecks.filter((witness) => witness.ok).length;
   const requiredWitnesses = 2;
-  const policyBundle = defaultEmailPolicyBundle();
+  const policyBundle = await loadConfiguredPolicyBundle(config);
+  const policyUrl = configuredPolicyUrl(config, policyBundle);
   const registry = await safeRegistryStatus(config);
   return {
     status: healthyWitnesses >= requiredWitnesses && healthyPolicyWitnesses >= requiredWitnesses && config.email.provider ? "ready" : "not_ready",
@@ -178,6 +183,7 @@ export async function gatewayStatus(config) {
       policy_id: policyBundle.policy_id,
       policy_epoch_id: policyBundle.epoch_id,
       policy_bundle_digest: policyBundleDigest(policyBundle),
+      policy_url: policyUrl || null,
       rules: policyBundle.rules
     },
     registry,
@@ -218,6 +224,7 @@ function emailProtocolVersions() {
     recipient_verification_schema_version: "strata.recipient.verification_receipt.v1",
     policy_bundle_schema_version: EMAIL_POLICY_BUNDLE_VERSION,
     policy_decision_schema_version: EMAIL_POLICY_DECISION_VERSION,
+    policy_pointer_schema_version: EMAIL_POLICY_POINTER_VERSION,
     policy_quorum_schema_version: "strata.email.policy_quorum.v1"
   };
 }
@@ -261,7 +268,7 @@ function policyWitnessSigningSemantics() {
     artifact: "policy-decision.json",
     signed_subject_schema: EMAIL_POLICY_DECISION_VERSION,
     quorum_required: "2-of-3",
-    semantics: "Policy witnesses independently sign allow/deny decisions over the exact email payload digest and policy epoch. The gateway refuses to mint the side-effect capability unless at least two policy witnesses return allow."
+    semantics: "Policy witnesses independently sign allow/deny decisions over the exact email payload digest, policy epoch, policy digest, and policy URL. The gateway refuses to mint the side-effect capability unless at least two policy witnesses return allow."
   };
 }
 
@@ -287,16 +294,21 @@ export async function runVerifiedEmailSend(input, config) {
   };
 
   const paths = artifactPaths(config, outDir);
+  const policyBundle = await loadConfiguredPolicyBundle(config);
+  const policyUrl = configuredPolicyUrl(config, policyBundle);
+  writeJson(paths.policyBundle, policyBundle);
   const policyQuorum = await collectPolicyQuorum({
     witnesses: config.policyWitnesses,
     email: canonical,
     commitment: publicCommitment,
+    policyBundle,
+    policyUrl,
     threshold: 2
   });
   writeJson(paths.policyDecision, policyQuorum);
 
   if (!policyQuorum.ok) {
-    return createPolicyDeniedCertificate({ config, outDir, paths, runId, certificateUrl, request, publicCommitment, policyQuorum });
+    return createPolicyDeniedCertificate({ config, outDir, paths, runId, certificateUrl, request, publicCommitment, policyQuorum, policyBundle });
   }
 
   const keys = loadGatewayKeys(config);
@@ -374,11 +386,12 @@ export async function runVerifiedEmailSend(input, config) {
     requireCheckpointQuorum: true,
     requireCheckpointTransparency: true
   });
+  const policyBundleVerification = verifyPolicyBundleForQuorum(policyBundle, policyQuorum);
   const ok = session.ok && checkpointResult.ok;
   const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
   const registryAuthority = registryBinding ? verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) : null;
-  const verified = ok && (!registryAuthority || registryAuthority.ok);
-  const verification = { ok: verified, session, checkpoint: checkpointResult, registry_authority: registryAuthority };
+  const verified = ok && policyBundleVerification.ok && (!registryAuthority || registryAuthority.ok);
+  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
   const certificateBody = {
@@ -405,7 +418,9 @@ export async function runVerifiedEmailSend(input, config) {
       decision: policyQuorum.decision,
       policy_id: policyQuorum.policy_id,
       policy_epoch_id: policyQuorum.policy_epoch_id,
+      policy_bundle_version: policyBundle.version,
       policy_bundle_digest: policyQuorum.policy_bundle_digest,
+      policy_url: policyQuorum.policy_url,
       policy_witness_quorum: `${policyQuorum.allow_count}-of-${policyQuorum.total_witnesses}`,
       policy_quorum_threshold: policyQuorum.threshold,
       policy_witness_signing: policyWitnessSigningSemantics()
@@ -425,7 +440,7 @@ export async function runVerifiedEmailSend(input, config) {
       certificate: certificateUrl,
       bundle: `${certificateUrl}/bundle`
     },
-    errors: [...session.errors, ...checkpointResult.errors, ...(registryAuthority?.errors || [])]
+    errors: [...session.errors, ...checkpointResult.errors, ...policyBundleVerification.errors, ...(registryAuthority?.errors || [])]
   };
   const certificateDigest = digestValue(certificateBody);
   const certificate = { ...certificateBody, certificate_digest: certificateDigest };
@@ -441,6 +456,7 @@ export async function runVerifiedEmailSend(input, config) {
     certificate_digest: certificateDigest,
     tool_output: toolResult.output,
     policy_quorum: policyQuorum,
+    policy_bundle: policyBundleMetadata(policyBundle, policyUrl),
     registry: registryCertificateBinding(registryBinding),
     registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
@@ -472,13 +488,14 @@ export async function runVerifiedEmailSend(input, config) {
       transparency_log: paths.transparencyLog,
       verification: paths.verification,
       policy_decision: paths.policyDecision,
+      policy_bundle: paths.policyBundle,
       registry_epoch: paths.registryEpoch
     },
     errors: certificate.errors
   };
 }
 
-async function createPolicyDeniedCertificate({ config, outDir, paths, runId, certificateUrl, request, publicCommitment, policyQuorum }) {
+async function createPolicyDeniedCertificate({ config, outDir, paths, runId, certificateUrl, request, publicCommitment, policyQuorum, policyBundle }) {
   const keys = loadGatewayKeys(config);
   const keyring = {
     [keys.gateway.signer.keyId]: keys.gateway.publicKeyPem,
@@ -569,11 +586,12 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
     requireCheckpointQuorum: true,
     requireCheckpointTransparency: true
   });
-  const ok = session.ok && checkpointResult.ok && policyQuorum.decision === "deny";
+  const policyBundleVerification = verifyPolicyBundleForQuorum(policyBundle, policyQuorum);
+  const ok = session.ok && checkpointResult.ok && policyBundleVerification.ok && policyQuorum.decision === "deny";
   const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
   const registryAuthority = registryBinding ? verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) : null;
   const verified = ok && (!registryAuthority || registryAuthority.ok);
-  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum }, registry_authority: registryAuthority };
+  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum }, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
   const certificateBody = {
@@ -597,7 +615,9 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
       deny_reasons: policyQuorum.deny_reasons,
       policy_id: policyQuorum.policy_id,
       policy_epoch_id: policyQuorum.policy_epoch_id,
+      policy_bundle_version: policyBundle.version,
       policy_bundle_digest: policyQuorum.policy_bundle_digest,
+      policy_url: policyQuorum.policy_url,
       policy_witness_quorum: `${policyQuorum.allow_count}-of-${policyQuorum.total_witnesses}`,
       policy_quorum_threshold: policyQuorum.threshold,
       policy_witness_signing: policyWitnessSigningSemantics()
@@ -619,7 +639,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
       certificate: certificateUrl,
       bundle: `${certificateUrl}/bundle`
     },
-    errors: [...session.errors, ...checkpointResult.errors, ...(registryAuthority?.errors || [])]
+    errors: [...session.errors, ...checkpointResult.errors, ...policyBundleVerification.errors, ...(registryAuthority?.errors || [])]
   };
   const certificateDigest = digestValue(certificateBody);
   const certificate = { ...certificateBody, certificate_digest: certificateDigest };
@@ -632,6 +652,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
     run_id: runId,
     out_dir: outDir,
     policy_quorum: policyQuorum,
+    policy_bundle: policyBundleMetadata(policyBundle, policyQuorum.policy_url),
     registry: registryCertificateBinding(registryBinding),
     registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
@@ -658,6 +679,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
       transparency_log: paths.transparencyLog,
       verification: paths.verification,
       policy_decision: paths.policyDecision,
+      policy_bundle: paths.policyBundle,
       registry_epoch: paths.registryEpoch
     },
     errors: [`L2 policy denied email send: ${policyQuorum.deny_reasons.join(", ") || "policy quorum not met"}`]
@@ -678,6 +700,18 @@ export function verifyReceivedEmail(input, config) {
   const receipts = readJsonl(artifacts.receipts);
   const keyring = JSON.parse(readFileSync(artifacts.keyring, "utf8"));
   const checkpoint = JSON.parse(readFileSync(artifacts.checkpoint, "utf8"));
+  const policyBundle = artifacts.policy_bundle && existsSync(artifacts.policy_bundle)
+    ? JSON.parse(readFileSync(artifacts.policy_bundle, "utf8"))
+    : null;
+  const policyDecision = artifacts.policy_decision && existsSync(artifacts.policy_decision)
+    ? JSON.parse(readFileSync(artifacts.policy_decision, "utf8"))
+    : null;
+  const policyBundleVerification = verifyPolicyBundleForQuorum(policyBundle, policyDecision || {
+    policy_bundle_digest: certificate.policy?.policy_bundle_digest,
+    policy_epoch_id: certificate.policy?.policy_epoch_id,
+    policy_url: certificate.policy?.policy_url,
+    decisions: []
+  });
   const transparencyLogEntries = readJsonl(artifacts.transparency_log);
   const session = verifySession(receipts, keyring, {
     transparencyLogEntries,
@@ -691,7 +725,7 @@ export function verifyReceivedEmail(input, config) {
     requireCheckpointQuorum: true,
     requireCheckpointTransparency: true
   });
-  const certificateVerified = session.ok && checkpointResult.ok && digestValue(withoutDigest(certificate)) === certificate.certificate_digest;
+  const certificateVerified = session.ok && checkpointResult.ok && policyBundleVerification.ok && digestValue(withoutDigest(certificate)) === certificate.certificate_digest;
   const result = contentMatch && certificateVerified ? "valid" : "invalid";
   const verifierKey = loadRecipientVerifierKey(config);
   const unsigned = {
@@ -710,11 +744,13 @@ export function verifyReceivedEmail(input, config) {
     received_payload_digest: publicCommitment.payload_digest,
     received_headers_present: Object.keys(receivedHeaders).length > 0,
     header_verification: headerVerification,
+    policy_bundle_verification: policyBundleVerification,
     content_match: contentMatch,
     certificate_verified: certificateVerified,
     verification_errors: [
       ...session.errors.map((error) => `session: ${error}`),
-      ...checkpointResult.errors.map((error) => `checkpoint: ${error}`)
+      ...checkpointResult.errors.map((error) => `checkpoint: ${error}`),
+      ...policyBundleVerification.errors.map((error) => `policy bundle: ${error}`)
     ]
   };
   const receipt = {
@@ -844,6 +880,7 @@ function artifactPaths(config, outDir) {
     verification: join(outDir, "verification.json"),
     certificate: join(outDir, "certificate.json"),
     policyDecision: join(outDir, "policy-decision.json"),
+    policyBundle: join(outDir, "policy-bundle.json"),
     registryEpoch: join(outDir, "registry-epoch.json")
   };
 }
@@ -857,6 +894,7 @@ function publicArtifactUrls(config, runId) {
     transparency_log: `${baseUrl}/transparency-log.jsonl`,
     verification: `${baseUrl}/verification.json`,
     policy_decision: `${baseUrl}/policy-decision.json`,
+    policy_bundle: `${baseUrl}/policy-bundle.json`,
     registry_epoch: `${baseUrl}/registry-epoch.json`
   };
 }
@@ -929,7 +967,8 @@ async function checkPolicyWitness(spec) {
       health,
       key_id: publicKey.key_id || null,
       policy_bundle_digest: policy.policy_bundle_digest || null,
-      policy_epoch_id: policy.policy_bundle?.epoch_id || null
+      policy_epoch_id: policy.policy_bundle?.epoch_id || null,
+      policy_url: policy.policy_url || null
     };
   } catch (error) {
     return {
@@ -950,6 +989,7 @@ function policyQuorumInput(policyQuorum) {
     policy_id: policyQuorum.policy_id,
     policy_epoch_id: policyQuorum.policy_epoch_id,
     policy_bundle_digest: policyQuorum.policy_bundle_digest,
+    policy_url: policyQuorum.policy_url,
     threshold: policyQuorum.threshold,
     allow_count: policyQuorum.allow_count,
     deny_count: policyQuorum.deny_count,
@@ -984,7 +1024,9 @@ function registryCertificateBinding(registryBinding) {
     registry_epoch_id: registryBinding.epoch.epoch_id,
     registry_epoch_digest: registryBinding.epoch_digest,
     registry_epoch_url: registryBinding.epoch_url,
-    registry_authority_key_id: registryBinding.trust_anchor.key_id
+    registry_authority_key_id: registryBinding.trust_anchor.key_id,
+    policy_bundle_digest: registryBinding.epoch.policy_bundle_digest,
+    policy_bundle_url: registryBinding.epoch.policy_bundle_url || null
   };
 }
 
@@ -1024,6 +1066,51 @@ function verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, 
   };
 }
 
+async function loadConfiguredPolicyBundle(config) {
+  return loadEmailPolicyBundle({
+    file: config.policy?.bundleFile,
+    url: config.policy?.bundleUrl || ""
+  });
+}
+
+function configuredPolicyUrl(config, policyBundle) {
+  if (config.policy?.bundleUrl) {
+    return config.policy.bundleUrl;
+  }
+  if (config.registry?.url) {
+    return `${config.registry.url}/policies/epochs/${policyBundle.epoch_id}`;
+  }
+  return "";
+}
+
+function verifyPolicyBundleForQuorum(policyBundle, policyQuorum) {
+  const errors = [];
+  if (!policyBundle) {
+    errors.push("policy bundle artifact missing");
+  }
+  const policyBundleDigestValue = policyBundle ? policyBundleDigest(policyBundle) : null;
+  if (policyBundleDigestValue !== policyQuorum.policy_bundle_digest) {
+    errors.push(`policy bundle digest mismatch: bundle=${policyBundleDigestValue} quorum=${policyQuorum.policy_bundle_digest}`);
+  }
+  if (policyBundle?.epoch_id !== policyQuorum.policy_epoch_id) {
+    errors.push(`policy epoch mismatch: bundle=${policyBundle?.epoch_id} quorum=${policyQuorum.policy_epoch_id}`);
+  }
+  const decisionMismatches = (policyQuorum.decisions || [])
+    .filter((decision) => decision.subject?.policy_bundle_digest !== policyQuorum.policy_bundle_digest)
+    .map((decision) => decision.signature?.key_id || decision.key_id || decision.witness_id);
+  if (decisionMismatches.length > 0) {
+    errors.push(`policy decision digest mismatch for keys: ${decisionMismatches.join(", ")}`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+    policy_id: policyBundle?.policy_id || null,
+    policy_epoch_id: policyBundle?.epoch_id || null,
+    policy_bundle_digest: policyBundleDigestValue,
+    policy_url: policyQuorum.policy_url || null
+  };
+}
+
 async function safeRegistryStatus(config) {
   if (!config.registry?.url) {
     return { configured: false };
@@ -1037,6 +1124,8 @@ async function safeRegistryStatus(config) {
       registry_epoch_digest: binding.epoch_digest,
       registry_epoch_url: binding.epoch_url,
       registry_authority_key_id: binding.trust_anchor.key_id,
+      policy_bundle_digest: binding.epoch.policy_bundle_digest,
+      policy_bundle_url: binding.epoch.policy_bundle_url || null,
       errors: binding.verification.errors
     };
   } catch (error) {
@@ -1046,6 +1135,12 @@ async function safeRegistryStatus(config) {
 
 function createEgressPolicy(config) {
   const allowedUrls = [...config.witnesses, ...config.policyWitnesses].map((witness) => witness.url);
+  if (config.registry?.url) {
+    allowedUrls.push(config.registry.url);
+  }
+  if (config.policy?.bundleUrl) {
+    allowedUrls.push(config.policy.bundleUrl);
+  }
   if (config.email.provider === "resend") {
     allowedUrls.push(config.email.resendBaseUrl);
   }
@@ -1112,6 +1207,7 @@ function resolveArtifactRef(ref, config) {
         "transparency-log.jsonl": "transparency-log.jsonl",
         "verification.json": "verification.json",
         "policy-decision.json": "policy-decision.json",
+        "policy-bundle.json": "policy-bundle.json",
         "registry-epoch.json": "registry-epoch.json"
       };
       if (artifactMap[artifactName]) {
@@ -1125,10 +1221,6 @@ function resolveArtifactRef(ref, config) {
 function withoutDigest(certificate) {
   const { certificate_digest, ...rest } = certificate;
   return rest;
-}
-
-function fileRef(path) {
-  return `file://${resolve(path)}`;
 }
 
 function readJsonl(path) {

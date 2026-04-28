@@ -22,6 +22,8 @@ try {
   const server = startServer(witnessUrls, policyWitnessUrls, registryUrl);
   children.push(server);
   await waitForHealth(`http://${host}:${port}/health`);
+  const registryPolicyPointer = await fetch(`${registryUrl}/policies/current`).then((response) => response.json());
+  const registryPolicyBundle = await fetch(`${registryUrl}/policies/epochs/${registryPolicyPointer.active_policy.policy_epoch_id}`).then((response) => response.json());
 
   const client = createMcpClient(`http://${host}:${port}/mcp`);
   await client.call("initialize", {
@@ -73,6 +75,12 @@ try {
     ok: true,
     discovered_tools: tools.result.tools.map((tool) => tool.name),
     gateway_status: status.result.structuredContent.status,
+    registry_policy: {
+      pointer_version: registryPolicyPointer.version,
+      policy_epoch_id: registryPolicyPointer.active_policy.policy_epoch_id,
+      policy_bundle_digest: registryPolicyPointer.active_policy.policy_bundle_digest,
+      bundle_version: registryPolicyBundle.version
+    },
     policy_denial: denied.result.structuredContent,
     registry_resource_bytes: registry.result.contents[0].text.length,
     preview: preview.result.structuredContent,
@@ -82,7 +90,9 @@ try {
       version: bundle.version,
       receipt_count: bundle.receipts.length,
       has_keyring: Boolean(bundle.keyring),
-      has_policy_decision: Boolean(bundle.policy_decision)
+      has_policy_decision: Boolean(bundle.policy_decision),
+      has_policy_bundle: Boolean(bundle.policy_bundle),
+      policy_url: bundle.certificate.policy.policy_url
     },
     recipient_verification: recipientVerification.result.structuredContent
   }, null, 2));

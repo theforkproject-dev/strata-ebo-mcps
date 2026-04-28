@@ -1,11 +1,18 @@
 import {
   WITNESS_REGISTRY_EPOCH_VERSION,
+  canonicalize,
   loadOrCreateEd25519Signer,
+  signEd25519,
   signWitnessRegistryEpoch,
   verifyWitnessRegistryEpoch,
   witnessRegistryEpochDigest
 } from "../strata/primitives.js";
-import { defaultEmailPolicyBundle, policyBundleDigest } from "../policy/email-policy.js";
+import {
+  EMAIL_POLICY_POINTER_VERSION,
+  defaultEmailPolicyBundle,
+  policyBundleDigest,
+  policyBundleMetadata
+} from "../policy/email-policy.js";
 
 export const REGISTRY_ID = "strata-email-demo-registry";
 export const REGISTRY_EPOCH_ID = "email-demo-epoch-001";
@@ -15,8 +22,7 @@ export function loadRegistrySigner({ keyFile = "artifacts/registry/registry-auth
   return loadOrCreateEd25519Signer({ keyFile, keyId });
 }
 
-export async function buildEmailRegistryEpoch({ mechanicalWitnesses, policyWitnesses, signer, fetchImpl = fetch }) {
-  const policyBundle = defaultEmailPolicyBundle();
+export async function buildEmailRegistryEpoch({ mechanicalWitnesses, policyWitnesses, signer, policyBundle = defaultEmailPolicyBundle(), policyUrl = "", fetchImpl = fetch }) {
   const policyHash = policyBundleDigest(policyBundle);
   const mechanical = await Promise.all(mechanicalWitnesses.map((witness) => witnessEntry({ witness, tier: "mechanical", policyHash, fetchImpl })));
   const policy = await Promise.all(policyWitnesses.map((witness) => witnessEntry({ witness, tier: "policy", policyHash, fetchImpl })));
@@ -28,6 +34,7 @@ export async function buildEmailRegistryEpoch({ mechanicalWitnesses, policyWitne
     valid_until: null,
     workflow_id: "email.send",
     policy_bundle_digest: policyHash,
+    policy_bundle_url: policyUrl || null,
     status_semantics: {
       deprecated: true,
       expired: true,
@@ -46,6 +53,24 @@ export async function buildEmailRegistryEpoch({ mechanicalWitnesses, policyWitne
       public_key_pem: signer.publicKeyPem
     },
     verification: verifyWitnessRegistryEpoch(signed, { [signer.keyId]: signer.publicKeyPem })
+  };
+}
+
+export function buildEmailPolicyPointer({ policyBundle = defaultEmailPolicyBundle(), policyUrl, signer }) {
+  const pointer = {
+    version: EMAIL_POLICY_POINTER_VERSION,
+    registry_id: REGISTRY_ID,
+    pointer_id: "current",
+    valid_from: REGISTRY_VALID_FROM,
+    active_policy: policyBundleMetadata(policyBundle, policyUrl)
+  };
+  return {
+    ...pointer,
+    signature: {
+      key_id: signer.keyId,
+      algorithm: "Ed25519",
+      signature: signEd25519(canonicalize(pointer), signer.privateKey)
+    }
   };
 }
 

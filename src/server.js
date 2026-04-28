@@ -218,6 +218,7 @@ function serveCertificateArtifact(response, runDir, artifactName) {
     "transparency-log.jsonl": { path: "transparency-log.jsonl", type: "application/jsonl" },
     "verification.json": { path: "verification.json", type: "application/json" },
     "policy-decision.json": { path: "policy-decision.json", type: "application/json" },
+    "policy-bundle.json": { path: "policy-bundle.json", type: "application/json" },
     "registry-epoch.json": { path: "registry-epoch.json", type: "application/json" }
   };
   const artifact = artifactMap[artifactName];
@@ -245,6 +246,7 @@ function loadCertificateBundle(runId, runDir) {
     transparency_log: readJsonl(join(runDir, "transparency-log.jsonl")),
     verification: readJson(join(runDir, "verification.json")),
     policy_decision: readOptionalJson(join(runDir, "policy-decision.json")),
+    policy_bundle: readOptionalJson(join(runDir, "policy-bundle.json")),
     registry_epoch: readOptionalJson(join(runDir, "registry-epoch.json")),
     recipient_verifications: loadRecipientVerifications(certificate, runId)
   };

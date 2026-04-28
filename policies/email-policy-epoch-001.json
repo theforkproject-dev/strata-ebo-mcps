@@ -1,0 +1,14 @@
+{
+  "version": "strata.email.policy_bundle.v1",
+  "policy_id": "email-policy.v1",
+  "epoch_id": "email-policy-epoch-001",
+  "rules": {
+    "allowed_from_domains": ["theforkproject.com"],
+    "allowed_recipient_domains": ["amotivv.com"],
+    "max_recipients": 3,
+    "require_subject_prefix": "[Verified]",
+    "deny_keywords": ["password", "secret key", "wire transfer"],
+    "require_tags": ["conversation_id", "turn_id"],
+    "allowed_tools": ["email_send_verified"]
+  }
+}

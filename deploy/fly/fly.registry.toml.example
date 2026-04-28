@@ -7,6 +7,7 @@ primary_region = "iad"
 [env]
   HOST = "0.0.0.0"
   PORT = "8080"
+  PUBLIC_BASE_URL = "https://strata-email-registry.fly.dev"
   REGISTRY_KEY_ID = "registry-authority:email-demo"
   REGISTRY_KEY_FILE = "/data/registry-authority.key.json"
   WITNESS_URLS = "w1=https://strata-email-witness-1.fly.dev,w2=https://strata-email-witness-2.fly.dev,w3=https://strata-email-witness-3.fly.dev"

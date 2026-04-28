@@ -23,7 +23,7 @@ Core claim:
 
 `email_send_verified` requires both L1 mechanical quorum and L2 policy quorum. The default L2 policy allows sends only when sender domain is `theforkproject.com`, every recipient domain is `amotivv.com`, recipient count is at most 3, subject starts with `[Verified]`, body/subject do not contain denied keywords, and tags include `conversation_id` and `turn_id`.
 
-Certificates are also bound to a signed witness registry epoch. The demo registry is a separate service that authorizes L1 and L2 witness keys for the `email.send` workflow and active policy digest.
+Certificates are also bound to a signed witness registry epoch. The demo registry is a separate service that authorizes L1 and L2 witness keys for the `email.send` workflow, publishes the active policy bundle, and signs the active policy digest.
 
 `email_verify_received.received` is a typed object matching the email fields from preview/send. It also accepts optional `headers`, including `X-Strata-Action-Id`, `X-Strata-Payload-Digest`, `X-Strata-Certificate-URL`, and `X-Strata-Witness-Tier` when the mail client/API exposes them. Some APIs hide custom headers; verification still works from the received canonical content plus certificate ref, but supplied headers are checked against the certificate.
 
@@ -64,7 +64,7 @@ The first real recipient for the demo can be passed as the MCP tool argument:
 ```json
 {
   "to": ["jason@amotivv.com"],
-  "subject": "Verified agent email demo",
+  "subject": "[Verified] Verified agent email demo",
   "text": "This email was routed through the Strata Verified Action Gateway."
 }
 ```
@@ -93,10 +93,21 @@ OAuth clients, authorization codes, access tokens, and refresh tokens are persis
 
 Current limitation: the file store is appropriate for one MCP machine. If the app scales horizontally, replace it with a shared database-backed store.
 
+## Governance Policy Bundle
+
+The active policy bundle is a versioned artifact at `policies/email-policy-epoch-001.json`. In the live architecture, the registry plane publishes it rather than the MCP gateway or individual policy witnesses:
+
+```text
+GET https://strata-email-registry.fly.dev/policies/current
+GET https://strata-email-registry.fly.dev/policies/epochs/email-policy-epoch-001
+```
+
+`POLICY_BUNDLE_URL` points the MCP gateway at the registry-hosted bundle. Policy witnesses can load the same bundle from a URL or from the local artifact file while pinning the same digest.
+
 ## Fly.io
 
 Fly.io is the recommended host for the live demo. Use one MCP app, three L1 witness apps, and three L2 policy witness apps. See `docs/fly-deployment.md` and `deploy/fly/*.toml.example`.
-The demo also uses a separate registry app (`strata-email-registry`) for signed witness authority epochs.
+The demo also uses a separate registry app (`strata-email-registry`) for signed witness authority epochs and policy bundle publication.
 
 I do not recommend Netlify for the MCP server itself. Netlify can host a static explainer or certificate viewer, but the MCP server needs long-lived HTTP behavior, persistent artifacts/keys, and separately addressable witness servers.
 
@@ -134,7 +145,7 @@ Each certificate URL also exposes a verifier-ready bundle:
 GET /certificates/:id/bundle
 ```
 
-The bundle contains `certificate`, `receipts`, `keyring`, `checkpoint`, `transparency_log`, `verification`, `policy_decision`, and any matching `recipient_verifications`. Individual artifacts are also exposed under `/certificates/:id/artifacts/...`.
+The bundle contains `certificate`, `receipts`, `keyring`, `checkpoint`, `transparency_log`, `verification`, `policy_decision`, `policy_bundle`, and any matching `recipient_verifications`. Individual artifacts are also exposed under `/certificates/:id/artifacts/...`.
 It also includes `registry_epoch`, which binds the witness keys in the certificate to a signed governance epoch.
 
 Tags are intentionally flat `Record<string,string>` for MCP schema compatibility. Use flattened conventions like `conversation_id`, `turn_id`, `skill_name`, or `case_id`; nested provenance can be added later if needed.

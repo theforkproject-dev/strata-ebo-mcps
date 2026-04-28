@@ -10,6 +10,7 @@ primary_region = "iad"
   POLICY_WITNESS_ID = "p2"
   POLICY_WITNESS_KEY_ID = "policy-witness:p2:fly"
   POLICY_WITNESS_KEY_FILE = "/data/policy-witness.key.json"
+  POLICY_BUNDLE_URL = "https://strata-email-registry.fly.dev/policies/epochs/email-policy-epoch-001"
 
 [[mounts]]
   source = "strata_policy_witness_2_data"

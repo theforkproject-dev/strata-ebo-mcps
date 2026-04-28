@@ -8,6 +8,7 @@ RUN printf "%s" "$CACHE_BUST" > /tmp/cache-bust
 COPY package.json ./
 COPY src ./src
 COPY bin ./bin
+COPY policies ./policies
 COPY docs ./docs
 COPY vendor ./vendor
 COPY README.md ./README.md

@@ -7,6 +7,8 @@ export function loadConfig(env = process.env) {
   const sessionSecret = env.MCP_SESSION_SECRET || randomBytes(32).toString("hex");
   const dataDir = env.DATA_DIR || "artifacts/email-mcp";
   const publicBaseUrl = trimSlash(env.PUBLIC_BASE_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8899"}`);
+  const registryUrl = trimSlash(env.REGISTRY_URL || "");
+  const policyBundleEpochId = env.POLICY_BUNDLE_EPOCH_ID || "email-policy-epoch-001";
 
   return {
     host: env.HOST || "127.0.0.1",
@@ -35,7 +37,12 @@ export function loadConfig(env = process.env) {
       codeTtlMs: Number(env.OAUTH_CODE_TTL_SECONDS || 600) * 1000
     },
     registry: {
-      url: trimSlash(env.REGISTRY_URL || "")
+      url: registryUrl
+    },
+    policy: {
+      bundleFile: env.POLICY_BUNDLE_FILE || "policies/email-policy-epoch-001.json",
+      bundleUrl: trimSlash(env.POLICY_BUNDLE_URL || (registryUrl ? `${registryUrl}/policies/epochs/${policyBundleEpochId}` : "")),
+      epochId: policyBundleEpochId
     },
     witnesses: parseWitnessUrls(env.WITNESS_URLS || "", "w"),
     policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p")

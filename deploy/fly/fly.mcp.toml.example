@@ -17,6 +17,7 @@ primary_region = "iad"
   WITNESS_URLS = "w1=https://strata-email-witness-1.fly.dev,w2=https://strata-email-witness-2.fly.dev,w3=https://strata-email-witness-3.fly.dev"
   POLICY_WITNESS_URLS = "p1=https://strata-email-policy-witness-1.fly.dev,p2=https://strata-email-policy-witness-2.fly.dev,p3=https://strata-email-policy-witness-3.fly.dev"
   REGISTRY_URL = "https://strata-email-registry.fly.dev"
+  POLICY_BUNDLE_URL = "https://strata-email-registry.fly.dev/policies/epochs/email-policy-epoch-001"
 
 [[mounts]]
   source = "strata_email_mcp_data"

@@ -1,22 +1,68 @@
-import { canonicalize, digestValue, sha256Hex, signEd25519, verifyEd25519 } from "../strata/primitives.js";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { canonicalize, digestValue, signEd25519, verifyEd25519 } from "../strata/primitives.js";
 
 export const EMAIL_POLICY_BUNDLE_VERSION = "strata.email.policy_bundle.v1";
 export const EMAIL_POLICY_DECISION_VERSION = "strata.email.policy_decision.v1";
+export const EMAIL_POLICY_POINTER_VERSION = "strata.email.policy_pointer.v1";
+export const DEFAULT_EMAIL_POLICY_EPOCH_ID = "email-policy-epoch-001";
+export const DEFAULT_EMAIL_POLICY_FILE = "policies/email-policy-epoch-001.json";
+
+const DEFAULT_POLICY_FILE_URL = new URL("../../policies/email-policy-epoch-001.json", import.meta.url);
 
 export function defaultEmailPolicyBundle() {
-  return {
-    version: EMAIL_POLICY_BUNDLE_VERSION,
-    policy_id: "email-policy.v1",
-    epoch_id: "email-policy-epoch-001",
-    rules: {
-      allowed_from_domains: ["theforkproject.com"],
-      allowed_recipient_domains: ["amotivv.com"],
-      max_recipients: 3,
-      require_subject_prefix: "[Verified]",
-      deny_keywords: ["password", "secret key", "wire transfer"],
-      require_tags: ["conversation_id", "turn_id"],
-      allowed_tools: ["email_send_verified"]
+  return loadEmailPolicyBundleSync();
+}
+
+export function loadEmailPolicyBundleSync({ file } = {}) {
+  const filePath = resolvePolicyFile(file);
+  const policyBundle = JSON.parse(readFileSync(filePath, "utf8"));
+  return validateEmailPolicyBundle(policyBundle, filePath);
+}
+
+export async function loadEmailPolicyBundle({ file, url, fetchImpl = fetch } = {}) {
+  if (url) {
+    const response = await fetchImpl(url);
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.error || `policy bundle request returned ${response.status}`);
     }
+    return validateEmailPolicyBundle(policyBundleFromEnvelope(body), url);
+  }
+  return loadEmailPolicyBundleSync({ file });
+}
+
+export function policyBundleFromEnvelope(body) {
+  if (body?.version === EMAIL_POLICY_BUNDLE_VERSION) {
+    return body;
+  }
+  if (body?.policy_bundle?.version === EMAIL_POLICY_BUNDLE_VERSION) {
+    return body.policy_bundle;
+  }
+  throw new Error("response did not contain a strata.email.policy_bundle.v1 policy bundle");
+}
+
+export function validateEmailPolicyBundle(policyBundle, source = "policy bundle") {
+  if (!policyBundle || typeof policyBundle !== "object" || Array.isArray(policyBundle)) {
+    throw new Error(`${source} must be an object`);
+  }
+  if (policyBundle.version !== EMAIL_POLICY_BUNDLE_VERSION) {
+    throw new Error(`${source} has unsupported policy bundle version: ${policyBundle.version}`);
+  }
+  if (!policyBundle.policy_id || !policyBundle.epoch_id || !policyBundle.rules) {
+    throw new Error(`${source} must include policy_id, epoch_id, and rules`);
+  }
+  return policyBundle;
+}
+
+export function policyBundleMetadata(policyBundle, policyUrl = "") {
+  return {
+    policy_id: policyBundle.policy_id,
+    policy_epoch_id: policyBundle.epoch_id,
+    policy_bundle_version: policyBundle.version,
+    policy_bundle_digest: policyBundleDigest(policyBundle),
+    policy_url: policyUrl || null
   };
 }
 
@@ -69,7 +115,7 @@ export function evaluateEmailPolicy({ email, commitment, policyBundle = defaultE
   };
 }
 
-export function createPolicyDecisionSubject({ witnessId, policyBundle, email, commitment, issuedAt = new Date().toISOString() }) {
+export function createPolicyDecisionSubject({ witnessId, policyBundle, policyUrl = "", email, commitment, issuedAt = new Date().toISOString() }) {
   const evaluation = evaluateEmailPolicy({ email, commitment, policyBundle });
   return {
     version: EMAIL_POLICY_DECISION_VERSION,
@@ -79,6 +125,7 @@ export function createPolicyDecisionSubject({ witnessId, policyBundle, email, co
     policy_id: policyBundle.policy_id,
     policy_epoch_id: policyBundle.epoch_id,
     policy_bundle_digest: policyBundleDigest(policyBundle),
+    policy_url: policyUrl || null,
     email_payload_digest: commitment.payload_digest,
     commitment_schema_version: commitment.version,
     decision: evaluation.decision,
@@ -161,8 +208,7 @@ export function verifyPolicyQuorumAuthority({ policyQuorum, registryEpoch, workf
   };
 }
 
-export async function collectPolicyQuorum({ witnesses, email, commitment, threshold = 2, fetchImpl = fetch }) {
-  const policyBundle = defaultEmailPolicyBundle();
+export async function collectPolicyQuorum({ witnesses, email, commitment, policyBundle = defaultEmailPolicyBundle(), policyUrl = "", threshold = 2, fetchImpl = fetch }) {
   const expectedPolicyDigest = policyBundleDigest(policyBundle);
   const decisions = [];
   const errors = [];
@@ -179,7 +225,13 @@ export async function collectPolicyQuorum({ witnesses, email, commitment, thresh
       const response = await fetchImpl(`${baseUrl}/v1/evaluate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, commitment, policy_bundle_digest: expectedPolicyDigest })
+        body: JSON.stringify({
+          email,
+          commitment,
+          policy_epoch_id: policyBundle.epoch_id,
+          policy_bundle_digest: expectedPolicyDigest,
+          policy_url: policyUrl || null
+        })
       });
       const body = await response.json();
       if (!response.ok) {
@@ -219,6 +271,7 @@ export async function collectPolicyQuorum({ witnesses, email, commitment, thresh
     policy_id: policyBundle.policy_id,
     policy_epoch_id: policyBundle.epoch_id,
     policy_bundle_digest: expectedPolicyDigest,
+    policy_url: policyUrl || null,
     decision: allowDecisions.length >= threshold ? "allow" : "deny",
     allow_count: allowDecisions.length,
     deny_count: denyDecisions.length,
@@ -227,6 +280,20 @@ export async function collectPolicyQuorum({ witnesses, email, commitment, thresh
     decisions,
     errors
   };
+}
+
+function resolvePolicyFile(file) {
+  if (!file) {
+    return fileURLToPath(DEFAULT_POLICY_FILE_URL);
+  }
+  if (file.startsWith("file://")) {
+    return fileURLToPath(file);
+  }
+  const candidate = resolve(file);
+  if (existsSync(candidate)) {
+    return candidate;
+  }
+  return resolve(process.cwd(), file);
 }
 
 function ruleResult(rule, pass, details = {}) {

@@ -6,7 +6,7 @@ Netlify is still useful for a static marketing page or certificate viewer, but i
 
 ## App Shape
 
-Use seven Fly apps:
+Use eight Fly apps:
 
 - `strata-email-mcp`: MCP/OAuth/email gateway server.
 - `strata-email-witness-1`: Level 1 witness `w1`.
@@ -15,7 +15,7 @@ Use seven Fly apps:
 - `strata-email-policy-witness-1`: Level 2 policy witness `p1`.
 - `strata-email-policy-witness-2`: Level 2 policy witness `p2`.
 - `strata-email-policy-witness-3`: Level 2 policy witness `p3`.
-- `strata-email-registry`: signed witness registry epoch service.
+- `strata-email-registry`: signed witness registry epoch service and governance-hosted policy bundle publisher.
 
 Each app should have one persistent volume:
 
@@ -23,6 +23,7 @@ Each app should have one persistent volume:
 - L1 witness volumes store each witness key and WAL.
 - L2 policy witness volumes store each policy witness key.
 - Registry volume stores the registry authority signing key.
+- The active policy bundle is copied into the image under `policies/email-policy-epoch-001.json`; the registry publishes it at `/policies/epochs/email-policy-epoch-001`.
 
 ## Safety
 
@@ -69,14 +70,21 @@ Use `OAUTH_CONSENT_PASSWORD_SHA256` instead of `OAUTH_CONSENT_PASSWORD` if you d
 3. Create/deploy `strata-email-registry` with `WITNESS_URLS` and `POLICY_WITNESS_URLS` pointing at the six witness apps.
 4. Confirm each L1 witness returns `/health` and `/v1/public-key`.
 5. Confirm each L2 policy witness returns `/health`, `/v1/public-key`, and `/v1/policy`.
-6. Confirm registry returns `/registry/current` and `/registry/public-key`.
-7. Deploy `strata-email-mcp` with `WITNESS_URLS`, `POLICY_WITNESS_URLS`, and `REGISTRY_URL`.
+6. Confirm registry returns `/registry/current`, `/registry/public-key`, `/policies/current`, and `/policies/epochs/email-policy-epoch-001`.
+7. Deploy `strata-email-mcp` with `WITNESS_URLS`, `POLICY_WITNESS_URLS`, `REGISTRY_URL`, and `POLICY_BUNDLE_URL`.
 8. Confirm MCP health and OAuth metadata:
 
 ```bash
 curl https://strata-email-mcp.fly.dev/health
 curl https://strata-email-mcp.fly.dev/.well-known/oauth-protected-resource
 curl https://strata-email-mcp.fly.dev/.well-known/oauth-authorization-server
+```
+
+Policy endpoint checks:
+
+```bash
+curl https://strata-email-registry.fly.dev/policies/current
+curl https://strata-email-registry.fly.dev/policies/epochs/email-policy-epoch-001
 ```
 
 ## Known Demo Tradeoffs

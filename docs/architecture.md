@@ -21,7 +21,7 @@ The server combines two existing patterns:
 
 The functional L2 demo uses three policy witness HTTP services. Each exposes `/health`, `/v1/public-key`, `/v1/policy`, and `/v1/evaluate`.
 
-The active policy bundle is `strata.email.policy_bundle.v1` / `email-policy-epoch-001`. It requires:
+The active policy bundle is `strata.email.policy_bundle.v1` / `email-policy-epoch-001`. The canonical demo artifact is `policies/email-policy-epoch-001.json`, and the registry publishes it at `/policies/epochs/email-policy-epoch-001`. It requires:
 
 - sender domain `theforkproject.com`
 - recipient domains limited to `amotivv.com`
@@ -30,7 +30,7 @@ The active policy bundle is `strata.email.policy_bundle.v1` / `email-policy-epoc
 - no denied keywords: `password`, `secret key`, `wire transfer`
 - tags `conversation_id` and `turn_id`
 
-Each policy witness signs a `strata.email.policy_decision.v1` allow or deny decision over the exact commitment digest and policy epoch. The gateway requires 2-of-3 allow decisions before it asks the L1 gateway witnesses to sign the `IntentGrant`.
+Each policy witness signs a `strata.email.policy_decision.v1` allow or deny decision over the exact commitment digest, policy epoch, policy digest, and policy URL. The gateway requires 2-of-3 allow decisions before it asks the L1 gateway witnesses to sign the `IntentGrant`.
 
 ## Registry
 
@@ -40,8 +40,10 @@ The demo registry is a separate service from the MCP gateway. It exposes:
 - `GET /registry/public-key`
 - `GET /registry/current`
 - `GET /registry/epochs/email-demo-epoch-001`
+- `GET /policies/current`
+- `GET /policies/epochs/email-policy-epoch-001`
 
-The registry signs a `turnstile.witness-registry-epoch.v1` object authorizing the six witness keys for workflow `email.send` and the active policy bundle digest. Certificates include the registry epoch id, digest, URL, and authority key id. Certificate bundles include `registry_epoch.json` so downstream verifiers can check witness authority at signing time.
+The registry signs a `turnstile.witness-registry-epoch.v1` object authorizing the six witness keys for workflow `email.send` and the active policy bundle digest. It also publishes a signed `strata.email.policy_pointer.v1` current-policy pointer. Certificates include the registry epoch id, digest, URL, authority key id, policy digest, and policy URL. Certificate bundles include `registry_epoch.json` and `policy_bundle.json` so downstream verifiers can check witness authority and policy-digest binding at signing time.
 
 ## Recipient Verification
 
@@ -65,7 +67,7 @@ The same metadata is returned in the MCP tool result, so an agent can show the s
 The public certificate endpoint exposes both the certificate summary and a complete verifier-ready bundle:
 
 - `GET /certificates/:id` returns `certificate.json`.
-- `GET /certificates/:id/bundle` returns certificate, receipt log, keyring, checkpoint, transparency log, verification result, policy decision, and matching recipient verification receipts.
+- `GET /certificates/:id/bundle` returns certificate, receipt log, keyring, checkpoint, transparency log, verification result, policy decision, policy bundle, and matching recipient verification receipts.
 - The bundle also contains the signed registry epoch used to authorize witness keys at signing time.
 - `GET /certificates/:id/artifacts/:name` exposes individual artifacts for tooling that wants streaming or partial retrieval.
 
