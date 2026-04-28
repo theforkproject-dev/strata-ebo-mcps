@@ -19,6 +19,7 @@ export const {
   toolRequestDigest,
   verifyCapability,
   verifyCheckpoint,
+  verifyEd25519,
   verifySession,
   writeCheckpoint
 } = strataModule;

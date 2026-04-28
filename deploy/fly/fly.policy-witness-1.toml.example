@@ -1,0 +1,34 @@
+app = "strata-email-policy-witness-1"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  POLICY_WITNESS_ID = "p1"
+  POLICY_WITNESS_KEY_ID = "policy-witness:p1:fly"
+  POLICY_WITNESS_KEY_FILE = "/data/policy-witness.key.json"
+
+[[mounts]]
+  source = "strata_policy_witness_1_data"
+  destination = "/data"
+
+[processes]
+  app = "node /app/bin/policy-witness.js"
+
+[http_service]
+  internal_port = 8080
+  processes = ["app"]
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"

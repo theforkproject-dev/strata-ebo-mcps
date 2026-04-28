@@ -4,7 +4,7 @@ This project demonstrates an MCP server whose ordinary email capability is gated
 
 Core claim:
 
-> Any MCP-speaking agent can discover an email sending capability, call it like a normal MCP tool, and receive both a normal email result and a verifiable Strata certificate showing the send action passed through a Level 1 witnessed gateway.
+> Any MCP-speaking agent can discover an email sending capability, call it like a normal MCP tool, and receive both a normal email result and a verifiable Strata certificate showing the send action passed through Level 1 mechanical witnesses and Level 2 policy witnesses.
 
 ## What This Shows
 
@@ -21,6 +21,8 @@ Core claim:
 - `email_verify_received`: Verifies a received email against a certificate and writes a recipient verification receipt.
 - `gateway_status`: Checks email provider configuration, witness health, quorum availability, and certificate transmission fields.
 
+`email_send_verified` requires both L1 mechanical quorum and L2 policy quorum. The default L2 policy allows sends only when sender domain is `theforkproject.com`, every recipient domain is `amotivv.com`, recipient count is at most 3, subject starts with `[Verified]`, body/subject do not contain denied keywords, and tags include `conversation_id` and `turn_id`.
+
 `email_verify_received.received` is a typed object matching the email fields from preview/send. It also accepts optional `headers`, including `X-Strata-Action-Id`, `X-Strata-Payload-Digest`, `X-Strata-Certificate-URL`, and `X-Strata-Witness-Tier` when the mail client/API exposes them. Some APIs hide custom headers; verification still works from the received canonical content plus certificate ref, but supplied headers are checked against the certificate.
 
 ## Resources
@@ -35,7 +37,7 @@ Core claim:
 npm run demo:dry-run
 ```
 
-The demo starts three non-TEE local HTTP witness servers using the witness implementation from `/Users/jason/Projects/strata-ebo-turnstile`, starts this MCP server, performs a full MCP flow, and writes artifacts under `artifacts/email-mcp/`.
+The demo starts three non-TEE local L1 HTTP witness servers and three local L2 policy witness servers, starts this MCP server, performs an L2-denied send attempt, performs a successful verified send, and writes artifacts under `artifacts/email-mcp/`.
 
 ## Real Resend Send
 
@@ -53,7 +55,7 @@ Then run:
 npm start
 ```
 
-For real sends, provide three Level 1 witness URLs in `WITNESS_URLS`, or use the local demo runner as the process supervisor while setting Resend credentials.
+For real sends, provide three Level 1 witness URLs in `WITNESS_URLS` and three Level 2 policy witness URLs in `POLICY_WITNESS_URLS`, or use the local demo runner as the process supervisor while setting Resend credentials.
 
 The first real recipient for the demo can be passed as the MCP tool argument:
 
@@ -91,7 +93,7 @@ Current limitation: the file store is appropriate for one MCP machine. If the ap
 
 ## Fly.io
 
-Fly.io is the recommended host for the live demo. Use one MCP app and three witness apps. See `docs/fly-deployment.md` and `deploy/fly/*.toml.example`.
+Fly.io is the recommended host for the live demo. Use one MCP app, three L1 witness apps, and three L2 policy witness apps. See `docs/fly-deployment.md` and `deploy/fly/*.toml.example`.
 
 I do not recommend Netlify for the MCP server itself. Netlify can host a static explainer or certificate viewer, but the MCP server needs long-lived HTTP behavior, persistent artifacts/keys, and separately addressable witness servers.
 
@@ -136,10 +138,12 @@ Tags are intentionally flat `Record<string,string>` for MCP schema compatibility
 5. `observation`
 6. `session.end`
 
-The 2-of-3 Level 1 witness quorum is embedded in quorum certificates on selected receipts. It is not represented as one receipt per witness.
+The 2-of-3 Level 1 witness quorum is embedded in quorum certificates on selected receipts. It is not represented as one receipt per witness. The 2-of-3 Level 2 policy quorum is captured as signed policy decisions and embedded into the `IntentGrant` as a typed input edge.
+
+L2 policy signatures do not add new receipt phases. They are collected before `intent.grant`, persisted in `policy-decision.json`, and their decision digests are embedded into `intent.grant.body.intent.intended_action.typed_inputs`.
 
 `X-Strata-Action-Id` is the pre-send `IntentGrant` `grant_id`. It means the gateway first granted a single-use capability for this exact canonical email payload, then the adapter executed the send and signed provider metadata.
 
 ## Current Scope
 
-This first version uses local non-TEE Level 1 HTTP witnesses. It does not yet package the email MCP server itself into Tinfoil Containers or implement the full OAuth 2.1 connector flow from Memory Box Go.
+This version uses operator-controlled non-TEE Level 1 HTTP witnesses and Level 2 policy witnesses. It demonstrates the L1/L2 protocol shape, but not independent witness operators, L3 domain attestors, or TEE substrate attestation.

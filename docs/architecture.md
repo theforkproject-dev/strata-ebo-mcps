@@ -9,18 +9,34 @@ The server combines two existing patterns:
 
 1. MCP client calls `tools/list` and discovers `gateway_status` and `email_send_verified`.
 2. MCP client may call `gateway_status` to check provider configuration and witness quorum availability.
-3. MCP client calls `email_send_verified` with recipient, subject, text/html, and optional tags.
+3. MCP client calls `email_send_verified` with recipient, subject, text/html, and required policy tags.
 4. The server canonicalizes the email into a digest-first payload commitment.
-5. `ActionGateway.toolCall()` mints a single-use capability and asks three Level 1 witnesses for quorum over the `IntentGrant`.
-6. The email adapter verifies the capability, sends through Resend, and signs a `tool.execution` receipt.
-7. The gateway appends a witnessed observation and session end receipt.
-8. The server writes a checkpoint, verifies the resulting chain, and returns MCP structured content with provider metadata and certificate refs.
+5. Three Level 2 policy witnesses evaluate the canonical email against the active policy bundle and return signed allow/deny decisions.
+6. `ActionGateway.toolCall()` mints a single-use capability and asks three Level 1 witnesses for quorum over the `IntentGrant`; the L2 policy quorum is embedded as typed input to the grant.
+7. The email adapter verifies the capability, sends through Resend, and signs a `tool.execution` receipt.
+8. The gateway appends a witnessed observation and session end receipt.
+9. The server writes a checkpoint, verifies the resulting chain, and returns MCP structured content with provider metadata and certificate refs.
+
+## L2 Policy Witnesses
+
+The functional L2 demo uses three policy witness HTTP services. Each exposes `/health`, `/v1/public-key`, `/v1/policy`, and `/v1/evaluate`.
+
+The active policy bundle is `strata.email.policy_bundle.v1` / `email-policy-epoch-001`. It requires:
+
+- sender domain `theforkproject.com`
+- recipient domains limited to `amotivv.com`
+- at most 3 recipients
+- subject prefix `[Verified]`
+- no denied keywords: `password`, `secret key`, `wire transfer`
+- tags `conversation_id` and `turn_id`
+
+Each policy witness signs a `strata.email.policy_decision.v1` allow or deny decision over the exact commitment digest and policy epoch. The gateway requires 2-of-3 allow decisions before it asks the L1 gateway witnesses to sign the `IntentGrant`.
 
 ## Recipient Verification
 
 `email_verify_received` models the downstream verification loop. A recipient or recipient-side agent provides the received canonical email fields plus a certificate ref. The tool recomputes the digest, verifies the Strata receipt chain/checkpoint, compares the payload digest, and writes a signed verification receipt.
 
-This is not a classic read receipt. It says: this received email payload matches a certified agent action and the certificate verifies under the declared Level 1 witness policy.
+This is not a classic read receipt. It says: this received email payload matches a certified agent action and the certificate verifies under the declared L1 mechanical and L2 policy witness requirements.
 
 ## Certificate Channel
 
@@ -47,12 +63,14 @@ The same metadata is returned in the MCP tool result, so an agent can show the s
 
 1. `session.start` opens the certified session and binds policy/admission evidence.
 2. `tool.request` commits to the requested email send digest.
-3. `intent.grant` records the gateway's single-use capability grant; Level 1 witnesses sign this grant subject.
+3. `intent.grant` records the gateway's single-use capability grant; Level 1 witnesses sign this grant subject, and the grant typed inputs embed the Level 2 policy quorum digest set.
 4. `tool.execution` records the email adapter's signed execution and provider message metadata.
 5. `observation` records the gateway's observation of the execution output digest; Level 1 witnesses sign this observation subject.
 6. `session.end` closes the certified session.
 
 The header `X-Strata-Action-Id` carries the pre-send `IntentGrant` `grant_id`, so the action is auditable as: the agent was granted permission to perform this exact side effect, then the side effect occurred under that grant.
+
+L2 policy signatures do not add new receipt phases. They are collected before `intent.grant`, persisted in `policy-decision.json`, and their decision digests are embedded into the `intent.grant` typed input edge. This keeps `receipt_count` at 6 while making the capability grant commit to the L2 policy quorum.
 
 Tags are flat strings by design for MCP compatibility. Use naming conventions such as `conversation_id`, `turn_id`, `skill_name`, and `case_id` for hierarchical provenance until nested tags are needed.
 

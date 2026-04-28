@@ -44,7 +44,7 @@ export class EmailMcpServer {
         title: "Strata Verified Email MCP Server",
         version: "0.1.0"
       },
-      instructions: "Use tools/list to discover gateway_status, email_preview, email_send_verified, and email_verify_received. email_send_verified is gated by Strata Level 1 witnessed action certificates.",
+      instructions: "Use tools/list to discover gateway_status, email_preview, email_send_verified, and email_verify_received. email_send_verified is gated by Strata Level 1 mechanical witnesses and Level 2 policy witnesses.",
       _meta: {
         session_id: requestContext.session?.sid
       }
@@ -68,20 +68,24 @@ export class EmailMcpServer {
 
       if (name === "email_send_verified" || name === "email.send_verified") {
         const run = await runVerifiedEmailSend(args, this.config);
-        this.latestCertificate = run;
+        if (run.certificate_ref) {
+          this.latestCertificate = run;
+        }
         const structuredContent = {
-          status: run.ok ? "sent" : "verification_failed",
-          provider: run.tool_output.provider,
-          provider_message_id: run.tool_output.provider_message_id,
-          provider_status: run.tool_output.provider_status,
+          status: run.denied ? "policy_denied" : (run.ok ? "sent" : "verification_failed"),
+          denial_stage: run.denial_stage,
+          provider: run.tool_output?.provider || null,
+          provider_message_id: run.tool_output?.provider_message_id || null,
+          provider_status: run.tool_output?.provider_status || null,
           certificate_ref: run.certificate_ref,
           certificate_url: run.certificate_url,
           certificate_digest: run.certificate_digest,
-          action_id: run.tool_output.action_id,
+          action_id: run.tool_output?.action_id || null,
           action_id_semantics: "pre-send IntentGrant grant_id authorizing this exact email send",
           payload_digest: run.commitment.payload_digest,
           witness_quorum: "2-of-3",
-          verification_tier: "level-1-mechanical",
+          verification_tiers: ["level-1-mechanical", "level-2-policy"],
+          policy_quorum: run.policy_quorum,
           receipt_count: run.receipt_count,
           checkpoint_id: run.checkpoint_id,
           receipt_root: run.final_state_root,

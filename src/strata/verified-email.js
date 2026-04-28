@@ -22,9 +22,17 @@ import {
 import { EMAIL_COMMITMENT_VERSION, EMAIL_PAYLOAD_VERSION, canonicalizeEmailInput, emailCommitment } from "../email/canonical.js";
 import { createEmailProvider } from "../email/provider.js";
 import { createEmailTool } from "../email/tool.js";
+import {
+  EMAIL_POLICY_BUNDLE_VERSION,
+  EMAIL_POLICY_DECISION_VERSION,
+  collectPolicyQuorum,
+  defaultEmailPolicyBundle,
+  policyBundleDigest
+} from "../policy/email-policy.js";
 
 export function createActionRegistry(config) {
-  const policyHash = sha256Hex(JSON.stringify({ product: "strata-email-mcp", version: "v1" }));
+  const policyBundle = defaultEmailPolicyBundle();
+  const policyHash = policyBundleDigest(policyBundle);
   return {
     version: "strata.action-registry.v1",
     registry_id: "action-registry.email-mcp",
@@ -34,7 +42,7 @@ export function createActionRegistry(config) {
       {
         name: "gateway_status",
         title: "Check Strata Gateway Status",
-        description: "Check email provider configuration and Level 1 witness health before sending.",
+        description: "Check email provider configuration, Level 1 witness health, and Level 2 policy witness health before sending.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -64,7 +72,7 @@ export function createActionRegistry(config) {
       {
         name: "email_send_verified",
         title: "Send Verified Email",
-        description: "Send an email through the Strata Verified Action Gateway. Assurance mode: witnessed. Witness tier: Level 1 mechanical. Quorum: 2-of-3.",
+        description: "Send an email through the Strata Verified Action Gateway. Assurance mode: witnessed. Witness tiers: Level 1 mechanical + Level 2 policy. Quorum: 2-of-3 at each tier.",
         inputSchema: emailInputSchema(),
         outputSchema: {
           type: "object",
@@ -115,10 +123,16 @@ export function createActionRegistry(config) {
         mcp_tool_name: "email_send_verified",
         assurance: {
           mode: "witnessed",
-          required_witness_tier: "mechanical",
-          quorum: { threshold: 2, set: "witness-set.email-mcp.l1" }
+          required_witness_tiers: ["mechanical", "policy"],
+          mechanical_quorum: { threshold: 2, set: "witness-set.email-mcp.l1" },
+          policy_quorum: { threshold: 2, set: "witness-set.email-mcp.l2-policy" }
         },
-        policy: { policy_bundle_hash: policyHash },
+        policy: {
+          policy_bundle_hash: policyHash,
+          policy_bundle_version: policyBundle.version,
+          policy_epoch_id: policyBundle.epoch_id,
+          policy_summary: policyBundle.rules
+        },
         adapter: { adapter_id: "resend-email-api", implementation: "Strata email adapter" },
         persisted_payload_policy: "digests-and-provider-metadata-only"
       }
@@ -137,18 +151,31 @@ export function previewEmail(input, config) {
 
 export async function gatewayStatus(config) {
   const witnessChecks = await Promise.all(config.witnesses.map(checkWitness));
+  const policyWitnessChecks = await Promise.all(config.policyWitnesses.map(checkPolicyWitness));
   const healthyWitnesses = witnessChecks.filter((witness) => witness.ok).length;
+  const healthyPolicyWitnesses = policyWitnessChecks.filter((witness) => witness.ok).length;
   const requiredWitnesses = 2;
+  const policyBundle = defaultEmailPolicyBundle();
   return {
-    status: healthyWitnesses >= requiredWitnesses && config.email.provider ? "ready" : "not_ready",
+    status: healthyWitnesses >= requiredWitnesses && healthyPolicyWitnesses >= requiredWitnesses && config.email.provider ? "ready" : "not_ready",
     checked_at: new Date().toISOString(),
     protocol: emailProtocolVersions(),
     assurance: {
       mode: "witnessed",
-      witness_tier: "level-1-mechanical",
-      witness_quorum_required: "2-of-3",
-      witness_quorum_available: `${healthyWitnesses}-of-${config.witnesses.length}`
+      witness_tiers: ["level-1-mechanical", "level-2-policy"],
+      mechanical_witness_quorum_required: "2-of-3",
+      mechanical_witness_quorum_available: `${healthyWitnesses}-of-${config.witnesses.length}`,
+      policy_witness_quorum_required: "2-of-3",
+      policy_witness_quorum_available: `${healthyPolicyWitnesses}-of-${config.policyWitnesses.length}`
     },
+    policy: {
+      policy_bundle_version: policyBundle.version,
+      policy_id: policyBundle.policy_id,
+      policy_epoch_id: policyBundle.epoch_id,
+      policy_bundle_digest: policyBundleDigest(policyBundle),
+      rules: policyBundle.rules
+    },
+    policy_witness_signing: policyWitnessSigningSemantics(),
     receipt_flow: emailReceiptFlow(),
     email_provider: {
       provider: config.email.provider,
@@ -171,7 +198,8 @@ export async function gatewayStatus(config) {
       },
       mcp_result_fields: ["certificate_url", "certificate_digest", "payload_digest", "receipt_root", "checkpoint_id"]
     },
-    witnesses: witnessChecks
+    witnesses: witnessChecks,
+    policy_witnesses: policyWitnessChecks
   };
 }
 
@@ -180,29 +208,47 @@ function emailProtocolVersions() {
     commitment_schema_version: EMAIL_COMMITMENT_VERSION,
     payload_schema_version: EMAIL_PAYLOAD_VERSION,
     certificate_schema_version: "strata.email.certificate.v1",
-    recipient_verification_schema_version: "strata.recipient.verification_receipt.v1"
+    recipient_verification_schema_version: "strata.recipient.verification_receipt.v1",
+    policy_bundle_schema_version: EMAIL_POLICY_BUNDLE_VERSION,
+    policy_decision_schema_version: EMAIL_POLICY_DECISION_VERSION,
+    policy_quorum_schema_version: "strata.email.policy_quorum.v1"
   };
 }
 
 function emailReceiptFlow() {
   return {
     expected_receipt_count: 6,
-    note: "receipt_count counts hash-chained protocol receipts, not the number of witnesses. Witness signatures are embedded in quorum certificates on selected receipts.",
+    note: "receipt_count counts hash-chained protocol receipts, not the number of witnesses. L1 witness signatures are embedded in quorum certificates on selected receipts. L2 policy signatures are separate policy decision artifacts whose digests are embedded into the intent.grant typed inputs.",
     steps: [
       { index: 0, kind: "session.start", purpose: "Open certified session and bind policy/admission evidence." },
       { index: 1, kind: "tool.request", purpose: "Commit to the requested email send digest before authorization." },
-      { index: 2, kind: "intent.grant", purpose: "Gateway grants a single-use capability for this exact send; Level 1 witnesses sign the grant subject." },
+      { index: 2, kind: "intent.grant", purpose: "Gateway grants a single-use capability for this exact send; Level 1 witnesses sign the grant subject, and the grant typed_inputs embed the Level 2 policy quorum digest set." },
       { index: 3, kind: "tool.execution", purpose: "Email adapter verifies the capability, sends via provider, and signs provider message metadata." },
       { index: 4, kind: "observation", purpose: "Gateway observes the tool execution output digest; Level 1 witnesses sign the observation subject." },
       { index: 5, kind: "session.end", purpose: "Close certified session and bind final state." }
     ],
-    quorum_semantics: "2-of-3 Level 1 witness quorum is over the intent grant and observed execution, not one receipt per witness."
+    quorum_semantics: "2-of-3 Level 1 witness quorum is over the intent grant and observed execution, not one receipt per witness. 2-of-3 Level 2 policy quorum is collected before the capability grant and attached to intent.grant as typed input evidence."
+  };
+}
+
+function policyWitnessSigningSemantics() {
+  return {
+    version: "strata.email.policy_quorum.v1",
+    signing_point: "before intent.grant",
+    receipt_attachment_point: "intent.grant.body.intent.intended_action.typed_inputs",
+    artifact: "policy-decision.json",
+    signed_subject_schema: EMAIL_POLICY_DECISION_VERSION,
+    quorum_required: "2-of-3",
+    semantics: "Policy witnesses independently sign allow/deny decisions over the exact email payload digest and policy epoch. The gateway refuses to mint the side-effect capability unless at least two policy witnesses return allow."
   };
 }
 
 export async function runVerifiedEmailSend(input, config) {
   if (config.witnesses.length < 3) {
     throw new Error("email_send_verified requires three Level 1 witness URLs in WITNESS_URLS");
+  }
+  if (config.policyWitnesses.length < 3) {
+    throw new Error("email_send_verified requires three Level 2 policy witness URLs in POLICY_WITNESS_URLS");
   }
 
   const runId = `email_${Date.now()}_${randomUUID().slice(0, 8)}`;
@@ -219,6 +265,37 @@ export async function runVerifiedEmailSend(input, config) {
   };
 
   const paths = artifactPaths(config, outDir);
+  const policyQuorum = await collectPolicyQuorum({
+    witnesses: config.policyWitnesses,
+    email: canonical,
+    commitment: publicCommitment,
+    threshold: 2
+  });
+  writeJson(paths.policyDecision, policyQuorum);
+
+  if (!policyQuorum.ok) {
+    return {
+      ok: false,
+      denied: true,
+      denial_stage: "level-2-policy",
+      run_id: runId,
+      out_dir: outDir,
+      policy_quorum: policyQuorum,
+      commitment: publicCommitment,
+      certificate_ref: null,
+      certificate_url: null,
+      certificate_digest: null,
+      tool_output: null,
+      receipt_count: 0,
+      checkpoint_id: null,
+      final_state_root: null,
+      artifacts: {
+        policy_decision: paths.policyDecision
+      },
+      errors: [`L2 policy denied email send: ${policyQuorum.deny_reasons.join(", ") || "policy quorum not met"}`]
+    };
+  }
+
   const keys = loadGatewayKeys(config);
   const keyring = {
     [keys.gateway.signer.keyId]: keys.gateway.publicKeyPem,
@@ -238,8 +315,8 @@ export async function runVerifiedEmailSend(input, config) {
   transparencyLog.reset();
 
   const egressPolicy = createEgressPolicy(config);
-  const policyHash = digestValue({ product: "strata-email-mcp", action: "email.send", egressPolicy });
-  const verifierProfile = createVerifierProfile({ profile_id: "profile.email-mcp.level1.v1" });
+  const policyHash = policyQuorum.policy_bundle_digest;
+  const verifierProfile = createVerifierProfile({ profile_id: "profile.email-mcp.l1-l2.v1" });
   const admissionManifest = createAdmissionManifest({
     manifestId: "adm_email_mcp_v1",
     governanceId: "gov_email_mcp_v1",
@@ -250,7 +327,7 @@ export async function runVerifiedEmailSend(input, config) {
     approvedTools: [{ tool_id: "email-api", audience: "email-api", methods: ["POST /v1/send-email"] }],
     approvedDataSources: [],
     approvedModels: [],
-    witnessSetId: "witness-set.email-mcp.l1",
+    witnessSetId: "witness-set.email-mcp.l1+l2",
     witnessThreshold: 2
   });
   const provider = createEmailProvider(config.email);
@@ -273,7 +350,8 @@ export async function runVerifiedEmailSend(input, config) {
   const toolResult = await gateway.toolCall({
     toolName: "email-api",
     method: "POST /v1/send-email",
-    request
+    request,
+    inputEdges: [policyQuorumInput(policyQuorum)]
   });
   await gateway.endSession("complete");
   const checkpoint = await gateway.createCheckpoint({ checkpointId: `chk_${runId}` });
@@ -314,10 +392,21 @@ export async function runVerifiedEmailSend(input, config) {
       sent_at: toolResult.output.sent_at
     },
     commitment: publicCommitment,
+    policy: {
+      tier: "level-2-policy",
+      decision: policyQuorum.decision,
+      policy_id: policyQuorum.policy_id,
+      policy_epoch_id: policyQuorum.policy_epoch_id,
+      policy_bundle_digest: policyQuorum.policy_bundle_digest,
+      policy_witness_quorum: `${policyQuorum.allow_count}-of-${policyQuorum.total_witnesses}`,
+      policy_quorum_threshold: policyQuorum.threshold,
+      policy_witness_signing: policyWitnessSigningSemantics()
+    },
     proof: {
       assurance_mode: "witnessed",
-      witness_tier: "level-1-mechanical",
-      witness_quorum: "2-of-3",
+      witness_tiers: ["level-1-mechanical", "level-2-policy"],
+      mechanical_witness_quorum: "2-of-3",
+      policy_witness_quorum: `${policyQuorum.allow_count}-of-${policyQuorum.total_witnesses}`,
       receipt_count: receipts.length,
       checkpoint_id: checkpoint.statement.checkpoint_id,
       receipt_root: session.finalStateRoot,
@@ -328,7 +417,8 @@ export async function runVerifiedEmailSend(input, config) {
       keyring: fileRef(paths.keyring),
       checkpoint: fileRef(paths.checkpoint),
       transparency_log: fileRef(paths.transparencyLog),
-      verification: fileRef(paths.verification)
+      verification: fileRef(paths.verification),
+      policy_decision: fileRef(paths.policyDecision)
     },
     errors: [...session.errors, ...checkpointResult.errors]
   };
@@ -344,6 +434,8 @@ export async function runVerifiedEmailSend(input, config) {
     certificate_url: certificateUrl,
     certificate_digest: certificateDigest,
     tool_output: toolResult.output,
+    policy_quorum: policyQuorum,
+    policy_witness_signing: policyWitnessSigningSemantics(),
     certificate_transmission: {
       in_band_headers: toolResult.output.headers_committed,
       header_semantics: {
@@ -365,7 +457,8 @@ export async function runVerifiedEmailSend(input, config) {
       keyring: paths.keyring,
       checkpoint: paths.checkpoint,
       transparency_log: paths.transparencyLog,
-      verification: paths.verification
+      verification: paths.verification,
+      policy_decision: paths.policyDecision
     },
     errors: certificate.errors
   };
@@ -516,7 +609,7 @@ function verifyStrataHeaders(headers, certificate, certificateRef) {
   const expected = {
     "x-strata-payload-digest": certificate.commitment.payload_digest,
     "x-strata-certificate-url": certificate.certificate_url,
-    "x-strata-witness-tier": certificate.proof?.witness_tier
+    "x-strata-witness-tier": certificate.proof?.witness_tier || (certificate.proof?.witness_tiers || []).find((tier) => tier === "level-1-mechanical") || "level-1-mechanical"
   };
   const checks = Object.fromEntries(Object.entries(expected).map(([key, value]) => {
     const actual = headers[key] || null;
@@ -549,7 +642,8 @@ function artifactPaths(config, outDir) {
     checkpoint: join(outDir, "checkpoint.json"),
     transparencyLog: join(outDir, "transparency-log.jsonl"),
     verification: join(outDir, "verification.json"),
-    certificate: join(outDir, "certificate.json")
+    certificate: join(outDir, "certificate.json"),
+    policyDecision: join(outDir, "policy-decision.json")
   };
 }
 
@@ -603,17 +697,67 @@ async function checkWitness(spec) {
   }
 }
 
+async function checkPolicyWitness(spec) {
+  try {
+    const baseUrl = spec.url.replace(/\/$/, "");
+    const [healthResponse, keyResponse, policyResponse] = await Promise.all([
+      fetch(`${baseUrl}/health`),
+      fetch(`${baseUrl}/v1/public-key`),
+      fetch(`${baseUrl}/v1/policy`)
+    ]);
+    const health = await healthResponse.json();
+    const publicKey = await keyResponse.json();
+    const policy = await policyResponse.json();
+    return {
+      id: spec.id,
+      url: spec.url,
+      ok: healthResponse.ok && keyResponse.ok && policyResponse.ok && Boolean(publicKey.key_id) && Boolean(policy.policy_bundle_digest),
+      health,
+      key_id: publicKey.key_id || null,
+      policy_bundle_digest: policy.policy_bundle_digest || null,
+      policy_epoch_id: policy.policy_bundle?.epoch_id || null
+    };
+  } catch (error) {
+    return {
+      id: spec.id,
+      url: spec.url,
+      ok: false,
+      error: error.message
+    };
+  }
+}
+
+function policyQuorumInput(policyQuorum) {
+  return {
+    type: "policy.quorum",
+    version: policyQuorum.version,
+    tier: "level-2-policy",
+    decision: policyQuorum.decision,
+    policy_id: policyQuorum.policy_id,
+    policy_epoch_id: policyQuorum.policy_epoch_id,
+    policy_bundle_digest: policyQuorum.policy_bundle_digest,
+    threshold: policyQuorum.threshold,
+    allow_count: policyQuorum.allow_count,
+    deny_count: policyQuorum.deny_count,
+    total_witnesses: policyQuorum.total_witnesses,
+    decision_digests: policyQuorum.decisions.map((decision) => digestValue({
+      subject: decision.subject,
+      signature: decision.signature
+    }))
+  };
+}
+
 function createEgressPolicy(config) {
-  const allowedUrls = config.witnesses.map((witness) => witness.url);
+  const allowedUrls = [...config.witnesses, ...config.policyWitnesses].map((witness) => witness.url);
   if (config.email.provider === "resend") {
     allowedUrls.push(config.email.resendBaseUrl);
   }
   return {
-    mode: "email-provider-and-witness-urls-only",
+    mode: "email-provider-l1-and-l2-witness-urls-only",
     allowed_urls: allowedUrls.sort(),
     enforcement: "application-code-typed-adapters",
-    evidence_ref: "runtime env WITNESS_URLS + EMAIL_PROVIDER",
-    note: "Level 1 demo policy evidence, not a TEE-native network firewall proof."
+    evidence_ref: "runtime env WITNESS_URLS + POLICY_WITNESS_URLS + EMAIL_PROVIDER",
+    note: "Functional L1/L2 demo policy evidence, not a TEE-native network firewall proof."
   };
 }
 
