@@ -228,6 +228,7 @@ function serveCertificateArtifact(response, runDir, artifactName) {
     "transparency-log.jsonl": { path: "transparency-log.jsonl", type: "application/jsonl" },
     "verification.json": { path: "verification.json", type: "application/json" },
     "admission-manifest.json": { path: "admission-manifest.json", type: "application/json" },
+    "operator-registry.json": { path: "operator-registry.json", type: "application/json" },
     "policy-decision.json": { path: "policy-decision.json", type: "application/json" },
     "policy-bundle.json": { path: "policy-bundle.json", type: "application/json" },
     "registry-epoch.json": { path: "registry-epoch.json", type: "application/json" }
@@ -257,6 +258,7 @@ function loadCertificateBundle(runId, runDir) {
     transparency_log: readJsonl(join(runDir, "transparency-log.jsonl")),
     verification: readJson(join(runDir, "verification.json")),
     admission_manifest: readOptionalJson(join(runDir, "admission-manifest.json")),
+    operator_registry: readOptionalJson(join(runDir, "operator-registry.json")),
     policy_decision: readOptionalJson(join(runDir, "policy-decision.json")),
     policy_bundle: readOptionalJson(join(runDir, "policy-bundle.json")),
     registry_epoch: readOptionalJson(join(runDir, "registry-epoch.json")),

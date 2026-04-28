@@ -43,8 +43,10 @@ The demo registry is a separate service from the MCP gateway. It exposes:
 - `GET /registry/epochs/email-demo-epoch-001`
 - `GET /policies/current`
 - `GET /policies/epochs/email-policy-epoch-001`
+- `GET /operators/current`
+- `GET /operators/operator:amotivv-demo`
 
-The registry signs a `turnstile.witness-registry-epoch.v1` object authorizing the six witness keys for workflow `email.send` and the active policy bundle digest. It also publishes a signed `strata.email.policy_pointer.v1` current-policy pointer. Certificates include the registry epoch id, digest, URL, authority key id, policy digest, and policy URL. Certificate bundles include `registry_epoch.json` and `policy_bundle.json` so downstream verifiers can check witness authority and policy-digest binding at signing time.
+The registry signs a `turnstile.witness-registry-epoch.v1` object authorizing the six witness keys for workflow `email.send` and the active policy bundle digest. It also publishes a signed `strata.email.policy_pointer.v1` current-policy pointer and signed `strata.operator_registry_record.v1` records that bind operator ids to admission signing keys. Certificates include the registry epoch id, digest, URL, authority key id, policy digest, policy URL, and operator registry binding. Certificate bundles include `registry_epoch.json`, `policy_bundle.json`, and `operator-registry.json` so downstream verifiers can check witness authority, policy-digest binding, and operator key authority at signing time.
 
 ## Operator Admission
 
@@ -56,7 +58,7 @@ Each send or policy-denied attempt creates a signed `turnstile.admission-manifes
 - configured L1/L2 witness set id and threshold
 - OAuth/MCP auth context without storing bearer tokens
 
-The `session.start` receipt commits to the signed admission manifest digest through the existing TURNSTILE `admission_manifest_hash`. Certificates include the admission binding and expose `admission-manifest.json` as a public artifact so verifiers can check operator signature, manifest digest binding, and policy digest binding.
+The `session.start` receipt commits to the signed admission manifest digest through the existing TURNSTILE `admission_manifest_hash`. Certificates include the admission binding and expose `admission-manifest.json` plus `operator-registry.json` as public artifacts so verifiers can check operator signature, manifest digest binding, policy digest binding, and registry-authorized operator identity.
 
 ## Recipient Verification
 
@@ -80,7 +82,7 @@ The same metadata is returned in the MCP tool result, so an agent can show the s
 The public certificate endpoint exposes both the certificate summary and a complete verifier-ready bundle:
 
 - `GET /certificates/:id` returns `certificate.json`.
-- `GET /certificates/:id/bundle` returns certificate, receipt log, keyring, checkpoint, transparency log, verification result, admission manifest, policy decision, policy bundle, and matching recipient verification receipts.
+- `GET /certificates/:id/bundle` returns certificate, receipt log, keyring, checkpoint, transparency log, verification result, admission manifest, operator registry record, policy decision, policy bundle, and matching recipient verification receipts.
 - The bundle also contains the signed registry epoch used to authorize witness keys at signing time.
 - `GET /certificates/:id/artifacts/:name` exposes individual artifacts for tooling that wants streaming or partial retrieval.
 

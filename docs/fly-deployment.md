@@ -72,7 +72,7 @@ The operator admission signing key defaults to `/data/email-mcp/keys/operator-ad
 3. Create/deploy `strata-email-registry` with `WITNESS_URLS` and `POLICY_WITNESS_URLS` pointing at the six witness apps.
 4. Confirm each L1 witness returns `/health` and `/v1/public-key`.
 5. Confirm each L2 policy witness returns `/health`, `/v1/public-key`, and `/v1/policy`.
-6. Confirm registry returns `/registry/current`, `/registry/public-key`, `/policies/current`, and `/policies/epochs/email-policy-epoch-001`.
+6. Confirm registry returns `/registry/current`, `/registry/public-key`, `/policies/current`, `/policies/epochs/email-policy-epoch-001`, `/operators/current`, and `/operators/operator:amotivv-demo`.
 7. Deploy `strata-email-mcp` with `WITNESS_URLS`, `POLICY_WITNESS_URLS`, `REGISTRY_URL`, `POLICY_BUNDLE_URL`, `TENANT_ID`, `OPERATOR_ID`, and `OPERATOR_ADMISSION_KEY_ID`.
 8. Confirm MCP health and OAuth metadata:
 
@@ -87,7 +87,10 @@ Policy endpoint checks:
 ```bash
 curl https://strata-email-registry.fly.dev/policies/current
 curl https://strata-email-registry.fly.dev/policies/epochs/email-policy-epoch-001
+curl https://strata-email-registry.fly.dev/operators/current
 ```
+
+`OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64` on the registry app must be the base64-encoded public key PEM for the MCP app's operator admission key. The MCP app owns the private key; the registry publishes the authorized public key mapping.
 
 ## Known Demo Tradeoffs
 

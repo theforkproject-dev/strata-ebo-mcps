@@ -42,7 +42,7 @@ export function attachOperatorSignature(manifest, { signer, publicKeyPem, operat
   };
 }
 
-export function verifyOperatorAdmissionManifest(manifest) {
+export function verifyOperatorAdmissionManifest(manifest, { operatorRegistryBinding = null, requireRegistry = false } = {}) {
   const errors = [];
   const operatorSignature = manifest?.operator_signature;
   if (!operatorSignature) {
@@ -51,6 +51,38 @@ export function verifyOperatorAdmissionManifest(manifest) {
       errors: ["operator admission signature missing"],
       manifest_digest: manifest ? admissionManifestDigest(manifest) : null
     };
+  }
+
+  const operatorRecord = operatorRegistryBinding?.operator_record || null;
+  if (requireRegistry && !operatorRecord) {
+    errors.push("operator registry record missing");
+  }
+  if (operatorRegistryBinding?.verification && !operatorRegistryBinding.verification.ok) {
+    errors.push(...operatorRegistryBinding.verification.errors.map((error) => `operator registry: ${error}`));
+  }
+  if (operatorRecord) {
+    if (operatorRecord.operator_id !== operatorSignature.operator_id) {
+      errors.push(`operator registry operator_id mismatch: manifest=${operatorSignature.operator_id} registry=${operatorRecord.operator_id}`);
+    }
+    if (operatorRecord.tenant_id !== operatorSignature.tenant_id) {
+      errors.push(`operator registry tenant_id mismatch: manifest=${operatorSignature.tenant_id} registry=${operatorRecord.tenant_id}`);
+    }
+    if (operatorRecord.key_id !== operatorSignature.key_id) {
+      errors.push(`operator registry key_id mismatch: manifest=${operatorSignature.key_id} registry=${operatorRecord.key_id}`);
+    }
+    if (operatorRecord.public_key_pem !== operatorSignature.public_key_pem) {
+      errors.push("operator registry public key does not match manifest embedded key");
+    }
+    if (!operatorRecord.authorized_policy_hashes?.includes(manifest.policy_hash)) {
+      errors.push(`operator registry key is not authorized for policy ${manifest.policy_hash}`);
+    }
+    if (!operatorRecord.authorized_workflows?.includes("email.send")) {
+      errors.push("operator registry key is not authorized for workflow email.send");
+    }
+    if (operatorRecord.status !== "active") {
+      errors.push(`operator registry key status is ${operatorRecord.status}`);
+    }
+    errors.push(...operatorRecordTimeErrors(operatorRecord, operatorSignature.subject?.issued_at));
   }
 
   const unsignedManifest = withoutOperatorSignature(manifest);
@@ -71,7 +103,7 @@ export function verifyOperatorAdmissionManifest(manifest) {
     errors.push("operator admission public key missing");
   } else if (!operatorSignature.signature?.signature) {
     errors.push("operator admission signature missing");
-  } else if (!verifyEd25519(canonicalize(operatorSignature.subject), operatorSignature.signature.signature, operatorSignature.public_key_pem)) {
+  } else if (!verifyEd25519(canonicalize(operatorSignature.subject), operatorSignature.signature.signature, operatorRecord?.public_key_pem || operatorSignature.public_key_pem)) {
     errors.push("operator admission signature verification failed");
   }
 
@@ -87,19 +119,23 @@ export function verifyOperatorAdmissionManifest(manifest) {
     policy_bundle_url: manifest.policy_bundle_url || null,
     unsigned_manifest_digest: admissionManifestDigest(unsignedManifest),
     signed_manifest_digest: admissionManifestDigest(manifest),
-    signed_at: operatorSignature.subject?.issued_at || null
+    signed_at: operatorSignature.subject?.issued_at || null,
+    registry_authorized: Boolean(operatorRecord) && !errors.some((error) => error.startsWith("operator registry")),
+    operator_registry_url: operatorRegistryBinding?.operator_record_url || null,
+    operator_registry_record_digest: operatorRegistryBinding?.operator_record_digest || null,
+    operator_registry_authority_key_id: operatorRegistryBinding?.registry_trust_anchor?.key_id || null
   };
 }
 
-export function optionalOperatorAdmissionVerification(manifest, { required = false } = {}) {
+export function optionalOperatorAdmissionVerification(manifest, { required = false, operatorRegistryBinding = null, requireRegistry = false } = {}) {
   if (!manifest) {
     return { ok: !required, skipped: !required, errors: required ? ["operator admission manifest artifact missing"] : [] };
   }
-  return verifyOperatorAdmissionManifest(manifest);
+  return verifyOperatorAdmissionManifest(manifest, { operatorRegistryBinding, requireRegistry });
 }
 
-export function operatorAdmissionCertificateBinding(manifest) {
-  const verification = verifyOperatorAdmissionManifest(manifest);
+export function operatorAdmissionCertificateBinding(manifest, { operatorRegistryBinding = null } = {}) {
+  const verification = verifyOperatorAdmissionManifest(manifest, { operatorRegistryBinding });
   return {
     tenant_id: verification.tenant_id,
     operator_id: verification.operator_id,
@@ -110,9 +146,29 @@ export function operatorAdmissionCertificateBinding(manifest) {
     unsigned_manifest_digest: verification.unsigned_manifest_digest,
     policy_hash: verification.policy_hash,
     policy_bundle_url: verification.policy_bundle_url,
+    operator_registry_url: verification.operator_registry_url,
+    operator_registry_record_digest: verification.operator_registry_record_digest,
+    operator_registry_authority_key_id: verification.operator_registry_authority_key_id,
+    registry_authorized: verification.registry_authorized,
     signature_version: OPERATOR_ADMISSION_SIGNATURE_VERSION,
     signature_verified: verification.ok
   };
+}
+
+function operatorRecordTimeErrors(record, signingTime) {
+  const errors = [];
+  if (!signingTime) {
+    errors.push("operator registry signing time missing");
+    return errors;
+  }
+  const signedAt = Date.parse(signingTime);
+  if (record.valid_from && signedAt < Date.parse(record.valid_from)) {
+    errors.push("operator registry key was not valid at signing time");
+  }
+  if (record.valid_until && signedAt > Date.parse(record.valid_until)) {
+    errors.push("operator registry key expired before signing time");
+  }
+  return errors;
 }
 
 export function withoutOperatorSignature(manifest) {

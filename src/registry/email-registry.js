@@ -1,8 +1,10 @@
 import {
   WITNESS_REGISTRY_EPOCH_VERSION,
   canonicalize,
+  digestValue,
   loadOrCreateEd25519Signer,
   signEd25519,
+  verifyEd25519,
   signWitnessRegistryEpoch,
   verifyWitnessRegistryEpoch,
   witnessRegistryEpochDigest
@@ -17,6 +19,7 @@ import {
 export const REGISTRY_ID = "strata-email-demo-registry";
 export const REGISTRY_EPOCH_ID = "email-demo-epoch-001";
 export const REGISTRY_VALID_FROM = "2026-04-28T00:00:00.000Z";
+export const OPERATOR_REGISTRY_RECORD_VERSION = "strata.operator_registry_record.v1";
 
 export function loadRegistrySigner({ keyFile = "artifacts/registry/registry-authority.key.json", keyId = "registry-authority:email-demo" } = {}) {
   return loadOrCreateEd25519Signer({ keyFile, keyId });
@@ -74,6 +77,93 @@ export function buildEmailPolicyPointer({ policyBundle = defaultEmailPolicyBundl
   };
 }
 
+export function buildOperatorRegistryRecord({
+  operatorId,
+  tenantId,
+  keyId,
+  publicKeyPem,
+  signer,
+  policyBundle = defaultEmailPolicyBundle(),
+  policyUrl = ""
+}) {
+  const policyHash = policyBundleDigest(policyBundle);
+  const record = {
+    version: OPERATOR_REGISTRY_RECORD_VERSION,
+    registry_id: REGISTRY_ID,
+    operator_id: operatorId,
+    tenant_id: tenantId,
+    key_id: keyId,
+    public_key_pem: publicKeyPem,
+    authorized_workflows: ["email.send"],
+    authorized_tools: ["email_send_verified"],
+    authorized_policy_hashes: [policyHash],
+    policy_bundle_url: policyUrl || null,
+    valid_from: REGISTRY_VALID_FROM,
+    valid_until: null,
+    status: "active",
+    status_events: [],
+    signatures: []
+  };
+  return {
+    ...record,
+    signatures: [{
+      key_id: signer.keyId,
+      algorithm: "Ed25519",
+      signature: signEd25519(canonicalize(record), signer.privateKey)
+    }]
+  };
+}
+
+export function verifyOperatorRegistryRecord(record, trustAnchors = {}) {
+  const errors = [];
+  if (!record || record.version !== OPERATOR_REGISTRY_RECORD_VERSION) {
+    return { ok: false, errors: ["invalid operator registry record version"] };
+  }
+  if (!record.operator_id) {
+    errors.push("operator_id missing");
+  }
+  if (!record.tenant_id) {
+    errors.push("tenant_id missing");
+  }
+  if (!record.key_id) {
+    errors.push("operator key_id missing");
+  }
+  if (!record.public_key_pem) {
+    errors.push("operator public_key_pem missing");
+  }
+  if (record.status !== "active") {
+    errors.push(`operator key status is ${record.status}`);
+  }
+  const unsignedRecord = { ...record, signatures: [] };
+  const signatures = record.signatures || [];
+  if (signatures.length === 0) {
+    errors.push("operator registry record signature missing");
+  }
+  const verifiedSignatures = [];
+  for (const signature of signatures) {
+    if (!signature?.signature) {
+      errors.push("operator registry signature value missing");
+      continue;
+    }
+    const publicKey = trustAnchors[signature.key_id];
+    if (!publicKey) {
+      errors.push(`operator registry signature key ${signature.key_id} is not trusted`);
+      continue;
+    }
+    if (!verifyEd25519(canonicalize(unsignedRecord), signature.signature, publicKey)) {
+      errors.push(`operator registry signature ${signature.key_id} verification failed`);
+      continue;
+    }
+    verifiedSignatures.push(signature.key_id);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+    operator_record_digest: digestValue(record),
+    verified_signatures: verifiedSignatures
+  };
+}
+
 export async function fetchRegistryBinding(registryUrl, fetchImpl = fetch) {
   if (!registryUrl) {
     return null;
@@ -97,6 +187,33 @@ export async function fetchRegistryBinding(registryUrl, fetchImpl = fetch) {
     epoch_digest: witnessRegistryEpochDigest(epoch),
     epoch_url: `${base}/registry/epochs/${epoch.epoch_id}`,
     trust_anchor: trustAnchor,
+    verification
+  };
+}
+
+export async function fetchOperatorRegistryBinding(registryUrl, operatorId, fetchImpl = fetch) {
+  if (!registryUrl || !operatorId) {
+    return null;
+  }
+  const base = registryUrl.replace(/\/$/, "");
+  const [recordResponse, publicKeyResponse] = await Promise.all([
+    fetchImpl(`${base}/operators/${encodeURIComponent(operatorId)}`),
+    fetchImpl(`${base}/registry/public-key`)
+  ]);
+  const record = await recordResponse.json();
+  const trustAnchor = await publicKeyResponse.json();
+  if (!recordResponse.ok) {
+    throw new Error(record.error || `operator registry returned ${recordResponse.status}`);
+  }
+  if (!publicKeyResponse.ok) {
+    throw new Error(trustAnchor.error || `registry public key returned ${publicKeyResponse.status}`);
+  }
+  const verification = verifyOperatorRegistryRecord(record, { [trustAnchor.key_id]: trustAnchor.public_key_pem });
+  return {
+    operator_record: record,
+    operator_record_digest: digestValue(record),
+    operator_record_url: `${base}/operators/${encodeURIComponent(record.operator_id)}`,
+    registry_trust_anchor: trustAnchor,
     verification
   };
 }

@@ -4,6 +4,7 @@ import { loadConfig } from "../src/config.js";
 import {
   buildEmailPolicyPointer,
   buildEmailRegistryEpoch,
+  buildOperatorRegistryRecord,
   loadRegistrySigner,
   REGISTRY_EPOCH_ID,
   REGISTRY_ID
@@ -21,6 +22,7 @@ const policyBundle = await loadEmailPolicyBundle({
 });
 const policyUrl = process.env.POLICY_BUNDLE_URL || `${config.publicBaseUrl}/policies/epochs/${policyBundle.epoch_id}`;
 const policyDigest = policyBundleDigest(policyBundle);
+const registryAuthoritySigner = { keyId: signer.signer.keyId, privateKey: signer.signer.privateKey, publicKeyPem: signer.publicKeyPem };
 
 const server = createServer(async (request, response) => {
   try {
@@ -32,7 +34,8 @@ const server = createServer(async (request, response) => {
         epoch_id: REGISTRY_EPOCH_ID,
         active_policy_epoch_id: policyBundle.epoch_id,
         active_policy_digest: policyDigest,
-        active_policy_url: policyUrl
+        active_policy_url: policyUrl,
+        operator_registry_configured: Boolean(config.operator.admissionPublicKeyPem)
       });
     }
     if (request.method === "GET" && url.pathname === "/registry/public-key") {
@@ -42,7 +45,7 @@ const server = createServer(async (request, response) => {
       const binding = await buildEmailRegistryEpoch({
         mechanicalWitnesses: config.witnesses,
         policyWitnesses: config.policyWitnesses,
-        signer: { keyId: signer.signer.keyId, privateKey: signer.signer.privateKey, publicKeyPem: signer.publicKeyPem },
+        signer: registryAuthoritySigner,
         policyBundle,
         policyUrl
       });
@@ -52,11 +55,31 @@ const server = createServer(async (request, response) => {
       return json(response, 200, buildEmailPolicyPointer({
         policyBundle,
         policyUrl,
-        signer: { keyId: signer.signer.keyId, privateKey: signer.signer.privateKey }
+        signer: registryAuthoritySigner
       }));
     }
     if (request.method === "GET" && url.pathname === `/policies/epochs/${policyBundle.epoch_id}`) {
       return json(response, 200, policyBundle);
+    }
+    if (request.method === "GET" && (url.pathname === "/operators/current" || url.pathname.startsWith("/operators/"))) {
+      const requestedOperatorId = url.pathname === "/operators/current"
+        ? config.operator.id
+        : decodeURIComponent(url.pathname.slice("/operators/".length));
+      if (requestedOperatorId !== config.operator.id) {
+        return json(response, 404, { error: "operator not found" });
+      }
+      if (!config.operator.admissionPublicKeyPem) {
+        return json(response, 503, { error: "operator admission public key is not configured" });
+      }
+      return json(response, 200, buildOperatorRegistryRecord({
+        operatorId: config.operator.id,
+        tenantId: config.tenant.id,
+        keyId: config.operator.admissionKeyId,
+        publicKeyPem: config.operator.admissionPublicKeyPem,
+        signer: registryAuthoritySigner,
+        policyBundle,
+        policyUrl
+      }));
     }
     return json(response, 404, { error: "not found" });
   } catch (error) {
@@ -71,7 +94,8 @@ server.listen(config.port, config.host, () => {
     registry_key_id: signer.signer.keyId,
     policy_epoch_id: policyBundle.epoch_id,
     policy_bundle_digest: policyDigest,
-    policy_url: policyUrl
+    policy_url: policyUrl,
+    operator_registry_configured: Boolean(config.operator.admissionPublicKeyPem)
   }));
 });
 

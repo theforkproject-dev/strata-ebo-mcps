@@ -26,7 +26,7 @@ Core claim:
 
 Certificates are also bound to a signed witness registry epoch. The demo registry is a separate service that authorizes L1 and L2 witness keys for the `email.send` workflow, publishes the active policy bundle, and signs the active policy digest.
 
-The gateway also signs the active tenant admission manifest with `operator-admission:amotivv-demo`. The manifest binds the tenant, approved action surface, active policy digest/URL, and OAuth/MCP auth context into the `session.start` receipt.
+The gateway also signs the active tenant admission manifest with `operator-admission:amotivv-demo`. The registry publishes the authorized operator public key, so verifiers can confirm the manifest key is the registered key for `operator:amotivv-demo`. The manifest binds the tenant, approved action surface, active policy digest/URL, and OAuth/MCP auth context into the `session.start` receipt.
 
 `email_verify_received.received` is a typed object matching the email fields from preview/send. It also accepts optional `headers`, including `X-Strata-Action-Id`, `X-Strata-Payload-Digest`, `X-Strata-Certificate-URL`, and `X-Strata-Witness-Tier` when the mail client/API exposes them. Some APIs hide custom headers; verification still works from the received canonical content plus certificate ref, but supplied headers are checked against the certificate.
 
@@ -103,6 +103,8 @@ The active policy bundle is a versioned artifact at `policies/email-policy-epoch
 ```text
 GET https://strata-email-registry.fly.dev/policies/current
 GET https://strata-email-registry.fly.dev/policies/epochs/email-policy-epoch-001
+GET https://strata-email-registry.fly.dev/operators/current
+GET https://strata-email-registry.fly.dev/operators/operator:amotivv-demo
 ```
 
 `POLICY_BUNDLE_URL` points the MCP gateway at the registry-hosted bundle. Policy witnesses load the same bundle from the registry URL while pinning the same digest.
@@ -116,6 +118,8 @@ GET /certificates/:id/artifacts/admission-manifest.json
 ```
 
 The certificate bundle includes `admission_manifest`, and recipient verification checks the operator signature and manifest digest binding for new certificates.
+
+The bundle also includes `operator_registry`, a registry-signed `strata.operator_registry_record.v1` record. Recipient verification checks that the manifest's embedded operator key matches the registry-authorized key for `operator:amotivv-demo` before accepting the operator signature.
 
 ## Fly.io
 
@@ -158,7 +162,7 @@ Each certificate URL also exposes a verifier-ready bundle:
 GET /certificates/:id/bundle
 ```
 
-The bundle contains `certificate`, `receipts`, `keyring`, `checkpoint`, `transparency_log`, `verification`, `admission_manifest`, `policy_decision`, `policy_bundle`, and any matching `recipient_verifications`. Individual artifacts are also exposed under `/certificates/:id/artifacts/...`.
+The bundle contains `certificate`, `receipts`, `keyring`, `checkpoint`, `transparency_log`, `verification`, `admission_manifest`, `operator_registry`, `policy_decision`, `policy_bundle`, and any matching `recipient_verifications`. Individual artifacts are also exposed under `/certificates/:id/artifacts/...`.
 It also includes `registry_epoch`, which binds the witness keys in the certificate to a signed governance epoch.
 
 Tags are intentionally flat `Record<string,string>` for MCP schema compatibility. Use flattened conventions like `conversation_id`, `turn_id`, `skill_name`, or `case_id`; nested provenance can be added later if needed.

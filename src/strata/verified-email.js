@@ -43,7 +43,7 @@ import {
   policyBundleDigest,
   verifyPolicyQuorumAuthority
 } from "../policy/email-policy.js";
-import { fetchRegistryBinding } from "../registry/email-registry.js";
+import { fetchOperatorRegistryBinding, fetchRegistryBinding } from "../registry/email-registry.js";
 
 export async function createActionRegistry(config) {
   const policyBundle = await loadConfiguredPolicyBundle(config);
@@ -394,12 +394,16 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     requireCheckpointTransparency: true
   });
   const policyBundleVerification = verifyPolicyBundleForQuorum(policyBundle, policyQuorum);
-  const operatorAdmission = verifyOperatorAdmissionManifest(admissionManifest);
   const ok = session.ok && checkpointResult.ok;
   const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
+  const operatorRegistryBinding = await loadAndWriteOperatorRegistryBinding(config, paths.operatorRegistry, admissionManifest);
+  const operatorAdmission = verifyOperatorAdmissionManifest(admissionManifest, {
+    operatorRegistryBinding,
+    requireRegistry: Boolean(config.registry?.url)
+  });
   const registryAuthority = registryBinding ? verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) : null;
   const verified = ok && policyBundleVerification.ok && operatorAdmission.ok && (!registryAuthority || registryAuthority.ok);
-  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, registry_authority: registryAuthority };
+  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, operator_registry: operatorRegistryBinding?.verification || null, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
   const certificateBody = {
@@ -420,7 +424,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
       sent_at: toolResult.output.sent_at
     },
     commitment: publicCommitment,
-    admission: operatorAdmissionCertificateBinding(admissionManifest),
+    admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
     policy: {
       tier: "level-2-policy",
@@ -466,7 +470,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     tool_output: toolResult.output,
     policy_quorum: policyQuorum,
     policy_bundle: policyBundleMetadata(policyBundle, policyUrl),
-    operator_admission: operatorAdmissionCertificateBinding(admissionManifest),
+    operator_admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
     registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
@@ -498,6 +502,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
       transparency_log: paths.transparencyLog,
       verification: paths.verification,
       admission_manifest: paths.admissionManifest,
+      operator_registry: paths.operatorRegistry,
       policy_decision: paths.policyDecision,
       policy_bundle: paths.policyBundle,
       registry_epoch: paths.registryEpoch
@@ -587,12 +592,16 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     requireCheckpointTransparency: true
   });
   const policyBundleVerification = verifyPolicyBundleForQuorum(policyBundle, policyQuorum);
-  const operatorAdmission = verifyOperatorAdmissionManifest(admissionManifest);
-  const ok = session.ok && checkpointResult.ok && policyBundleVerification.ok && operatorAdmission.ok && policyQuorum.decision === "deny";
+  const ok = session.ok && checkpointResult.ok && policyBundleVerification.ok && policyQuorum.decision === "deny";
   const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
+  const operatorRegistryBinding = await loadAndWriteOperatorRegistryBinding(config, paths.operatorRegistry, admissionManifest);
+  const operatorAdmission = verifyOperatorAdmissionManifest(admissionManifest, {
+    operatorRegistryBinding,
+    requireRegistry: Boolean(config.registry?.url)
+  });
   const registryAuthority = registryBinding ? verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) : null;
-  const verified = ok && (!registryAuthority || registryAuthority.ok);
-  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum }, registry_authority: registryAuthority };
+  const verified = ok && operatorAdmission.ok && (!registryAuthority || registryAuthority.ok);
+  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, operator_registry: operatorRegistryBinding?.verification || null, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum }, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
   const certificateBody = {
@@ -609,7 +618,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
       method: "POST /v1/send-email"
     },
     commitment: publicCommitment,
-    admission: operatorAdmissionCertificateBinding(admissionManifest),
+    admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
     policy: {
       tier: "level-2-policy",
@@ -655,7 +664,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     out_dir: outDir,
     policy_quorum: policyQuorum,
     policy_bundle: policyBundleMetadata(policyBundle, policyQuorum.policy_url),
-    operator_admission: operatorAdmissionCertificateBinding(admissionManifest),
+    operator_admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
     registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
@@ -682,6 +691,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
       transparency_log: paths.transparencyLog,
       verification: paths.verification,
       admission_manifest: paths.admissionManifest,
+      operator_registry: paths.operatorRegistry,
       policy_decision: paths.policyDecision,
       policy_bundle: paths.policyBundle,
       registry_epoch: paths.registryEpoch
@@ -707,7 +717,14 @@ export function verifyReceivedEmail(input, config) {
   const admissionManifest = artifacts.admission_manifest && existsSync(artifacts.admission_manifest)
     ? JSON.parse(readFileSync(artifacts.admission_manifest, "utf8"))
     : null;
-  const operatorAdmissionVerification = optionalOperatorAdmissionVerification(admissionManifest, { required: Boolean(certificate.admission) });
+  const operatorRegistryBinding = artifacts.operator_registry && existsSync(artifacts.operator_registry)
+    ? JSON.parse(readFileSync(artifacts.operator_registry, "utf8"))
+    : null;
+  const operatorAdmissionVerification = optionalOperatorAdmissionVerification(admissionManifest, {
+    required: Boolean(certificate.admission),
+    operatorRegistryBinding,
+    requireRegistry: Boolean(certificate.admission?.operator_registry_url)
+  });
   const operatorAdmissionCertificateErrors = operatorAdmissionCertificateBindingErrors(certificate, operatorAdmissionVerification);
   const policyBundle = artifacts.policy_bundle && existsSync(artifacts.policy_bundle)
     ? JSON.parse(readFileSync(artifacts.policy_bundle, "utf8"))
@@ -892,6 +909,7 @@ function artifactPaths(config, outDir) {
     verification: join(outDir, "verification.json"),
     certificate: join(outDir, "certificate.json"),
     admissionManifest: join(outDir, "admission-manifest.json"),
+    operatorRegistry: join(outDir, "operator-registry.json"),
     policyDecision: join(outDir, "policy-decision.json"),
     policyBundle: join(outDir, "policy-bundle.json"),
     registryEpoch: join(outDir, "registry-epoch.json")
@@ -907,6 +925,7 @@ function publicArtifactUrls(config, runId) {
     transparency_log: `${baseUrl}/transparency-log.jsonl`,
     verification: `${baseUrl}/verification.json`,
     admission_manifest: `${baseUrl}/admission-manifest.json`,
+    operator_registry: `${baseUrl}/operator-registry.json`,
     policy_decision: `${baseUrl}/policy-decision.json`,
     policy_bundle: `${baseUrl}/policy-bundle.json`,
     registry_epoch: `${baseUrl}/registry-epoch.json`
@@ -1027,6 +1046,15 @@ async function loadAndWriteRegistryBinding(config, registryEpochPath) {
     registry_trust_anchor: binding.trust_anchor,
     verification: binding.verification
   });
+  return binding;
+}
+
+async function loadAndWriteOperatorRegistryBinding(config, operatorRegistryPath, admissionManifest) {
+  if (!config.registry?.url || !admissionManifest?.operator_signature?.operator_id) {
+    return null;
+  }
+  const binding = await fetchOperatorRegistryBinding(config.registry.url, admissionManifest.operator_signature.operator_id);
+  writeJson(operatorRegistryPath, binding);
   return binding;
 }
 
@@ -1183,6 +1211,12 @@ function operatorAdmissionCertificateBindingErrors(certificate, verification) {
   if (verification.tenant_id !== certificate.admission.tenant_id) {
     errors.push("tenant does not match certificate admission binding");
   }
+  if (certificate.admission.operator_registry_url && verification.operator_registry_url !== certificate.admission.operator_registry_url) {
+    errors.push("operator registry URL does not match certificate admission binding");
+  }
+  if (certificate.admission.operator_registry_record_digest && verification.operator_registry_record_digest !== certificate.admission.operator_registry_record_digest) {
+    errors.push("operator registry record digest does not match certificate admission binding");
+  }
   return errors;
 }
 
@@ -1282,6 +1316,7 @@ function resolveArtifactRef(ref, config) {
         "transparency-log.jsonl": "transparency-log.jsonl",
         "verification.json": "verification.json",
         "admission-manifest.json": "admission-manifest.json",
+        "operator-registry.json": "operator-registry.json",
         "policy-decision.json": "policy-decision.json",
         "policy-bundle.json": "policy-bundle.json",
         "registry-epoch.json": "registry-epoch.json"

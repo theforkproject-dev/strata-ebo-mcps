@@ -9,6 +9,8 @@ export function loadConfig(env = process.env) {
   const publicBaseUrl = trimSlash(env.PUBLIC_BASE_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8899"}`);
   const registryUrl = trimSlash(env.REGISTRY_URL || "");
   const policyBundleEpochId = env.POLICY_BUNDLE_EPOCH_ID || "email-policy-epoch-001";
+  const operatorAdmissionPublicKeyPem = env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM
+    || (env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64 ? Buffer.from(env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64, "base64").toString("utf8") : "");
 
   return {
     host: env.HOST || "127.0.0.1",
@@ -50,7 +52,8 @@ export function loadConfig(env = process.env) {
     operator: {
       id: env.OPERATOR_ID || "operator:amotivv-demo",
       admissionKeyId: env.OPERATOR_ADMISSION_KEY_ID || "operator-admission:amotivv-demo",
-      admissionKeyFile: env.OPERATOR_ADMISSION_KEY_FILE || `${dataDir}/keys/operator-admission.key.json`
+      admissionKeyFile: env.OPERATOR_ADMISSION_KEY_FILE || `${dataDir}/keys/operator-admission.key.json`,
+      admissionPublicKeyPem: operatorAdmissionPublicKeyPem
     },
     witnesses: parseWitnessUrls(env.WITNESS_URLS || "", "w"),
     policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p")

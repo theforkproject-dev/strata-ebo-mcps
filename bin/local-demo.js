@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { loadOrCreateEd25519Signer } from "../src/strata/primitives.js";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const strataRoot = resolve(root, "vendor/strata-ebo-turnstile");
@@ -12,6 +13,9 @@ const witnessPorts = [9101, 9102, 9103];
 const policyWitnessPorts = [9201, 9202, 9203];
 const registryPort = 9301;
 const children = [];
+const operatorAdmissionKeyId = "operator-admission:amotivv-demo";
+const operatorAdmissionKeyFile = join(dataDir, "keys", "operator-admission.key.json");
+const operatorAdmissionKey = loadOrCreateEd25519Signer({ keyFile: operatorAdmissionKeyFile, keyId: operatorAdmissionKeyId });
 
 mkdirSync(dataDir, { recursive: true });
 
@@ -93,7 +97,9 @@ try {
       has_policy_decision: Boolean(bundle.policy_decision),
       has_policy_bundle: Boolean(bundle.policy_bundle),
       has_admission_manifest: Boolean(bundle.admission_manifest),
+      has_operator_registry: Boolean(bundle.operator_registry),
       operator_admission_signature_verified: bundle.certificate.admission?.signature_verified,
+      operator_registry_authorized: bundle.certificate.admission?.registry_authorized,
       policy_url: bundle.certificate.policy.policy_url
     },
     recipient_verification: recipientVerification.result.structuredContent
@@ -155,7 +161,11 @@ async function startRegistry(witnessUrls, policyWitnessUrls) {
       DATA_DIR: dataDir,
       REGISTRY_KEY_FILE: join(dataDir, "registry", "registry-authority.key.json"),
       WITNESS_URLS: witnessUrls,
-      POLICY_WITNESS_URLS: policyWitnessUrls
+      POLICY_WITNESS_URLS: policyWitnessUrls,
+      TENANT_ID: "default",
+      OPERATOR_ID: "operator:amotivv-demo",
+      OPERATOR_ADMISSION_KEY_ID: operatorAdmissionKeyId,
+      OPERATOR_ADMISSION_PUBLIC_KEY_PEM: operatorAdmissionKey.publicKeyPem
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -178,6 +188,10 @@ function startServer(witnessUrls, policyWitnessUrls, registryUrl) {
     WITNESS_URLS: witnessUrls,
     POLICY_WITNESS_URLS: policyWitnessUrls,
     REGISTRY_URL: registryUrl,
+    TENANT_ID: "default",
+    OPERATOR_ID: "operator:amotivv-demo",
+    OPERATOR_ADMISSION_KEY_ID: operatorAdmissionKeyId,
+    OPERATOR_ADMISSION_KEY_FILE: operatorAdmissionKeyFile,
     MCP_SESSION_SECRET: process.env.MCP_SESSION_SECRET || "local-demo-session-secret-32-bytes-minimum"
   };
   const child = spawn(process.execPath, [join(root, "src", "server.js")], {
