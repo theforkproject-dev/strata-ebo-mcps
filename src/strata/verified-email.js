@@ -15,6 +15,7 @@ import {
   loadOrCreateEd25519Signer,
   sha256Hex,
   signEd25519,
+  toolRequestDigest,
   verifyCheckpoint,
   verifySession,
   writeCheckpoint
@@ -177,6 +178,7 @@ export async function gatewayStatus(config) {
     },
     policy_witness_signing: policyWitnessSigningSemantics(),
     receipt_flow: emailReceiptFlow(),
+    denial_receipt_flow: policyDenialReceiptFlow(),
     email_provider: {
       provider: config.email.provider,
       from_configured: Boolean(config.email.from),
@@ -231,6 +233,21 @@ function emailReceiptFlow() {
   };
 }
 
+function policyDenialReceiptFlow() {
+  return {
+    expected_receipt_count: 4,
+    side_effect_executed: false,
+    note: "Policy-denied attempts receive their own certificate path without an IntentGrant, capability token, tool execution, or observation. This makes denial history auditable without pretending a side effect occurred.",
+    steps: [
+      { index: 0, kind: "session.start", purpose: "Open certified denial session and bind policy/admission evidence." },
+      { index: 1, kind: "policy.request", purpose: "Commit to the attempted email send digest before policy evaluation result is recorded." },
+      { index: 2, kind: "policy.decision", purpose: "Attach signed Level 2 policy witness deny decisions and reasons." },
+      { index: 3, kind: "session.end", purpose: "Close certified denial session with reason policy_denied." }
+    ],
+    quorum_semantics: "2-of-3 Level 2 policy witness denial is recorded as signed policy decision evidence. L1 witnesses still sign session boundaries and checkpoint, but no L1 IntentGrant exists because no capability was minted."
+  };
+}
+
 function policyWitnessSigningSemantics() {
   return {
     version: "strata.email.policy_quorum.v1",
@@ -274,26 +291,7 @@ export async function runVerifiedEmailSend(input, config) {
   writeJson(paths.policyDecision, policyQuorum);
 
   if (!policyQuorum.ok) {
-    return {
-      ok: false,
-      denied: true,
-      denial_stage: "level-2-policy",
-      run_id: runId,
-      out_dir: outDir,
-      policy_quorum: policyQuorum,
-      commitment: publicCommitment,
-      certificate_ref: null,
-      certificate_url: null,
-      certificate_digest: null,
-      tool_output: null,
-      receipt_count: 0,
-      checkpoint_id: null,
-      final_state_root: null,
-      artifacts: {
-        policy_decision: paths.policyDecision
-      },
-      errors: [`L2 policy denied email send: ${policyQuorum.deny_reasons.join(", ") || "policy quorum not met"}`]
-    };
+    return createPolicyDeniedCertificate({ config, outDir, paths, runId, certificateUrl, request, publicCommitment, policyQuorum });
   }
 
   const keys = loadGatewayKeys(config);
@@ -461,6 +459,181 @@ export async function runVerifiedEmailSend(input, config) {
       policy_decision: paths.policyDecision
     },
     errors: certificate.errors
+  };
+}
+
+async function createPolicyDeniedCertificate({ config, outDir, paths, runId, certificateUrl, request, publicCommitment, policyQuorum }) {
+  const keys = loadGatewayKeys(config);
+  const keyring = {
+    [keys.gateway.signer.keyId]: keys.gateway.publicKeyPem,
+    [keys.tool.signer.keyId]: keys.tool.publicKeyPem,
+    [keys.transparency.signer.keyId]: keys.transparency.publicKeyPem
+  };
+  const witnesses = await createWitnessClients(config.witnesses, keyring);
+  writeJson(paths.keyring, keyring);
+
+  const log = new JsonlReceiptLog(paths.receipts);
+  log.reset();
+  const transparencyLog = new LocalTransparencyLog({
+    filePath: paths.transparencyLog,
+    signer: keys.transparency.signer,
+    logId: "email-mcp-transparency-log"
+  });
+  transparencyLog.reset();
+
+  const egressPolicy = createEgressPolicy(config);
+  const policyHash = policyQuorum.policy_bundle_digest;
+  const verifierProfile = createVerifierProfile({ profile_id: "profile.email-mcp.l1-l2.denial.v1" });
+  const admissionManifest = createAdmissionManifest({
+    manifestId: "adm_email_mcp_v1",
+    governanceId: "gov_email_mcp_v1",
+    policyHash,
+    agent: tinfoilEvidence("mcp-agent", ["mcp://tools/*"], null),
+    gateway: tinfoilEvidence("email-gateway", ["strata://verified-actions/email.send"], egressPolicy),
+    verifier: tinfoilEvidence("email-verifier", ["verify://local/email"], null),
+    approvedTools: [{ tool_id: "email-api", audience: "email-api", methods: ["POST /v1/send-email"] }],
+    approvedDataSources: [],
+    approvedModels: [],
+    witnessSetId: "witness-set.email-mcp.l1+l2",
+    witnessThreshold: 2
+  });
+  const gateway = new ActionGateway({
+    log,
+    signer: keys.gateway.signer,
+    tools: {},
+    policyHash,
+    verifierProfile,
+    admissionManifest,
+    witnesses,
+    sideEffectWitnessThreshold: 0,
+    sessionBoundaryWitnessThreshold: 2,
+    checkpointWitnessThreshold: 2,
+    transparencyLog
+  });
+
+  await gateway.startSession({ sessionId: `sess_${runId}`, taskInputDigest: publicCommitment.payload_digest });
+  const stepIndex = gateway.nextStep();
+  const requestDigest = toolRequestDigest({
+    toolAudience: "email-api",
+    method: "POST /v1/send-email",
+    request
+  });
+  const policyRequestReceipt = await gateway.appendGatewayReceipt("policy.request", {
+    action_type: "tool.call",
+    tool_audience: "email-api",
+    method: "POST /v1/send-email",
+    request_digest: requestDigest,
+    email_payload_digest: publicCommitment.payload_digest,
+    commitment: publicCommitment
+  }, { stepIndex });
+  const policyQuorumDigest = digestValue(policyQuorum);
+  await gateway.appendGatewayReceipt("policy.decision", {
+    request_receipt_root: policyRequestReceipt.state_root,
+    decision: "deny",
+    denial_stage: "level-2-policy",
+    policy_quorum_digest: policyQuorumDigest,
+    policy_quorum: policyQuorum,
+    deny_reasons: policyQuorum.deny_reasons,
+    output_digest: policyQuorumDigest
+  }, { stepIndex });
+  await gateway.endSession("policy_denied");
+  const checkpoint = await gateway.createCheckpoint({ checkpointId: `chk_${runId}` });
+  writeCheckpoint(paths.checkpoint, checkpoint);
+
+  const receipts = log.readAll();
+  const transparencyLogEntries = transparencyLog.readAll();
+  const session = verifySession(receipts, keyring, {
+    transparencyLogEntries,
+    requireAdmissionManifest: true,
+    requireBoundaryQuorum: true,
+    requireTransparencyLog: true
+  });
+  const checkpointResult = verifyCheckpoint(checkpoint, receipts, keyring, {
+    transparencyLogEntries,
+    requireCheckpointQuorum: true,
+    requireCheckpointTransparency: true
+  });
+  const ok = session.ok && checkpointResult.ok && policyQuorum.decision === "deny";
+  const verification = { ok, session, checkpoint: checkpointResult, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum } };
+  writeJson(paths.verification, verification);
+
+  const certificateBody = {
+    version: "strata.email.policy_denial_certificate.v1",
+    run_id: runId,
+    certificate_url: certificateUrl,
+    issued_at: new Date().toISOString(),
+    denied: true,
+    denial_stage: "level-2-policy",
+    action: {
+      mcp_tool_name: "email_send_verified",
+      gateway_tool_name: "email-api",
+      method: "POST /v1/send-email"
+    },
+    commitment: publicCommitment,
+    policy: {
+      tier: "level-2-policy",
+      decision: policyQuorum.decision,
+      deny_reasons: policyQuorum.deny_reasons,
+      policy_id: policyQuorum.policy_id,
+      policy_epoch_id: policyQuorum.policy_epoch_id,
+      policy_bundle_digest: policyQuorum.policy_bundle_digest,
+      policy_witness_quorum: `${policyQuorum.allow_count}-of-${policyQuorum.total_witnesses}`,
+      policy_quorum_threshold: policyQuorum.threshold,
+      policy_witness_signing: policyWitnessSigningSemantics()
+    },
+    proof: {
+      assurance_mode: "policy_denied",
+      witness_tiers: ["level-1-mechanical", "level-2-policy"],
+      mechanical_boundary_quorum: "2-of-3",
+      policy_witness_quorum: `${policyQuorum.allow_count}-of-${policyQuorum.total_witnesses}`,
+      receipt_count: receipts.length,
+      checkpoint_id: checkpoint.statement.checkpoint_id,
+      receipt_root: session.finalStateRoot,
+      side_effect_executed: false,
+      verified: ok
+    },
+    denial_receipt_flow: policyDenialReceiptFlow(),
+    artifacts: {
+      receipts: fileRef(paths.receipts),
+      keyring: fileRef(paths.keyring),
+      checkpoint: fileRef(paths.checkpoint),
+      transparency_log: fileRef(paths.transparencyLog),
+      verification: fileRef(paths.verification),
+      policy_decision: fileRef(paths.policyDecision)
+    },
+    errors: [...session.errors, ...checkpointResult.errors]
+  };
+  const certificateDigest = digestValue(certificateBody);
+  const certificate = { ...certificateBody, certificate_digest: certificateDigest };
+  writeJson(paths.certificate, certificate);
+
+  return {
+    ok: false,
+    denied: true,
+    denial_stage: "level-2-policy",
+    run_id: runId,
+    out_dir: outDir,
+    policy_quorum: policyQuorum,
+    policy_witness_signing: policyWitnessSigningSemantics(),
+    commitment: publicCommitment,
+    certificate_ref: fileRef(outDir),
+    certificate_url: certificateUrl,
+    certificate_digest: certificateDigest,
+    tool_output: null,
+    receipt_count: receipts.length,
+    checkpoint_id: checkpoint.statement.checkpoint_id,
+    final_state_root: session.finalStateRoot,
+    denial_receipt_flow: policyDenialReceiptFlow(),
+    artifacts: {
+      certificate: paths.certificate,
+      receipts: paths.receipts,
+      keyring: paths.keyring,
+      checkpoint: paths.checkpoint,
+      transparency_log: paths.transparencyLog,
+      verification: paths.verification,
+      policy_decision: paths.policyDecision
+    },
+    errors: [`L2 policy denied email send: ${policyQuorum.deny_reasons.join(", ") || "policy quorum not met"}`]
   };
 }
 

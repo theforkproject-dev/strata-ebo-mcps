@@ -142,6 +142,15 @@ The 2-of-3 Level 1 witness quorum is embedded in quorum certificates on selected
 
 L2 policy signatures do not add new receipt phases. They are collected before `intent.grant`, persisted in `policy-decision.json`, and their decision digests are embedded into `intent.grant.body.intent.intended_action.typed_inputs`.
 
+Policy-denied attempts also produce denial certificates. A denied action has no `IntentGrant`, no capability token, no provider execution, and no observation. Instead, it creates a four-receipt denial chain:
+
+1. `session.start`
+2. `policy.request`
+3. `policy.decision`
+4. `session.end(policy_denied)`
+
+The denial certificate is checkpointed and transparency-logged, so refusal history is externally auditable rather than only an operator-local error log.
+
 `X-Strata-Action-Id` is the pre-send `IntentGrant` `grant_id`. It means the gateway first granted a single-use capability for this exact canonical email payload, then the adapter executed the send and signed provider metadata.
 
 ## Current Scope

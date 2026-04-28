@@ -72,6 +72,15 @@ The header `X-Strata-Action-Id` carries the pre-send `IntentGrant` `grant_id`, s
 
 L2 policy signatures do not add new receipt phases. They are collected before `intent.grant`, persisted in `policy-decision.json`, and their decision digests are embedded into the `intent.grant` typed input edge. This keeps `receipt_count` at 6 while making the capability grant commit to the L2 policy quorum.
 
+Denied attempts use a separate auditable certificate path. Because no side effect is authorized, the denial path has no `IntentGrant`, capability token, `tool.execution`, or observation. It produces:
+
+1. `session.start`
+2. `policy.request`
+3. `policy.decision`
+4. `session.end(policy_denied)`
+
+The denial certificate includes the signed L2 policy decisions, checkpoint, transparency log inclusion, and denial reasons. This lets auditors inspect refusal history without relying on operator-local logs.
+
 Tags are flat strings by design for MCP compatibility. Use naming conventions such as `conversation_id`, `turn_id`, `skill_name`, and `case_id` for hierarchical provenance until nested tags are needed.
 
 ## OAuth Connector Layer

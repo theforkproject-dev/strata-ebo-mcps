@@ -92,6 +92,8 @@ export class EmailMcpServer {
           verified: run.ok,
           certificate_transmission: run.certificate_transmission,
           receipt_flow: run.receipt_flow,
+          denial_receipt_flow: run.denial_receipt_flow,
+          side_effect_executed: !run.denied && run.ok,
           artifacts: run.artifacts,
           errors: run.errors
         };
