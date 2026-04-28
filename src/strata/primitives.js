@@ -1,0 +1,24 @@
+const strataModule = await import(process.env.STRATA_MODULE || new URL("../../../strata-ebo-turnstile/src/index.js", import.meta.url));
+
+export const {
+  ActionGateway,
+  HttpWitnessClient,
+  JsonlReceiptLog,
+  LocalTransparencyLog,
+  canonicalize,
+  capabilityDigest,
+  createAdmissionManifest,
+  createTinfoilEvidence,
+  createToolExecutionReceiptObject,
+  createVerifierProfile,
+  digestValue,
+  loadOrCreateEd25519Signer,
+  sha256Hex,
+  signEd25519,
+  signReceipt,
+  toolRequestDigest,
+  verifyCapability,
+  verifyCheckpoint,
+  verifySession,
+  writeCheckpoint
+} = strataModule;

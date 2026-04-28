@@ -1,0 +1,16 @@
+{
+  "name": "strata-ebo-mcps",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Email MCP demo for Strata Verified Actions with Level 1 witnessed sending.",
+  "scripts": {
+    "start": "node src/server.js",
+    "demo:dry-run": "EMAIL_PROVIDER=dry-run node bin/local-demo.js",
+    "test:oauth": "node bin/oauth-smoke.js",
+    "check": "node --check src/config.js && node --check src/jsonrpc.js && node --check src/session.js && node --check src/oauth/pkce.js && node --check src/oauth/store.js && node --check src/oauth/server.js && node --check src/server.js && node --check src/mcp-server.js && node --check src/strata/primitives.js && node --check src/strata/verified-email.js && node --check src/email/canonical.js && node --check src/email/provider.js && node --check src/email/tool.js && node --check bin/local-demo.js && node --check bin/oauth-smoke.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

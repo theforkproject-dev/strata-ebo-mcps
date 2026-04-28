@@ -1,0 +1,30 @@
+{
+  "name": "strata-ebo-turnstile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Certified-channel action provenance primitives for no-raw-egress AI agents.",
+  "scripts": {
+    "demo:abort": "node bin/turnstile-demo.js abort --out artifacts/demo/abort",
+    "demo:cross": "node bin/turnstile-demo.js cross-session --out artifacts/demo/cross-session",
+    "demo:dissent": "node bin/turnstile-demo.js dissent --out artifacts/demo/dissent",
+    "demo:happy": "node bin/turnstile-demo.js happy --out artifacts/demo/happy",
+    "demo:legacy": "node bin/turnstile-demo.js legacy-tool --out artifacts/demo/legacy-tool",
+    "demo:paste": "node bin/turnstile-demo.js paste-laundered --out artifacts/demo/paste-laundered",
+    "demo:side-effect-abort": "node bin/turnstile-demo.js side-effect-abort --out artifacts/demo/side-effect-abort",
+    "demo:skipped": "node bin/turnstile-demo.js skipped-step --out artifacts/demo/skipped-step",
+    "demo:stamped-output": "node bin/turnstile-demo.js stamped-output --out artifacts/demo/stamped-output",
+    "demo:stream-abort": "node bin/turnstile-demo.js stream-abort --out artifacts/demo/stream-abort",
+    "demo:tamper": "node bin/turnstile-demo.js tamper --out artifacts/demo/tamper",
+    "demo:hosted": "node bin/turnstile-hosted-demo.js",
+    "demo:registry": "node bin/turnstile-registry-demo.js",
+    "demo:mcp": "node bin/turnstile-mcp-agent-demo.js",
+    "example": "node examples/happy-path.js",
+    "gateway": "node bin/turnstile-gateway.js",
+    "test": "node --test",
+    "witness": "node bin/turnstile-witness.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
