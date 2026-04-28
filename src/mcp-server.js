@@ -87,6 +87,8 @@ export class EmailMcpServer {
           witness_quorum: "2-of-3",
           verification_tiers: ["level-1-mechanical", "level-2-policy"],
           policy_quorum: run.policy_quorum,
+          registry: run.registry,
+          registry_authority: run.registry_authority,
           receipt_count: run.receipt_count,
           checkpoint_id: run.checkpoint_id,
           receipt_root: run.final_state_root,

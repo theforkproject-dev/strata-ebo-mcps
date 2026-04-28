@@ -2,6 +2,9 @@ FROM node:24-slim
 
 WORKDIR /app
 
+ARG CACHE_BUST=0
+RUN printf "%s" "$CACHE_BUST" > /tmp/cache-bust
+
 COPY package.json ./
 COPY src ./src
 COPY bin ./bin
