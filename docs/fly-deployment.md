@@ -19,7 +19,7 @@ Use eight Fly apps:
 
 Each app should have one persistent volume:
 
-- MCP volume stores certificates, key material, and recipient verification receipts.
+- MCP volume stores certificates, gateway key material, operator admission signing key material, and recipient verification receipts.
 - L1 witness volumes store each witness key and WAL.
 - L2 policy witness volumes store each policy witness key.
 - Registry volume stores the registry authority signing key.
@@ -63,6 +63,8 @@ fly secrets set --app strata-email-mcp OAUTH_CONSENT_PASSWORD=...
 
 Use `OAUTH_CONSENT_PASSWORD_SHA256` instead of `OAUTH_CONSENT_PASSWORD` if you do not want the plaintext passphrase in Fly secrets.
 
+The operator admission signing key defaults to `/data/email-mcp/keys/operator-admission.key.json` on the MCP volume. `OPERATOR_ADMISSION_KEY_ID` is a public key identifier; the private key stays on the volume.
+
 ## Deployment Order
 
 1. Create/deploy `strata-email-witness-1`, `strata-email-witness-2`, `strata-email-witness-3`.
@@ -71,7 +73,7 @@ Use `OAUTH_CONSENT_PASSWORD_SHA256` instead of `OAUTH_CONSENT_PASSWORD` if you d
 4. Confirm each L1 witness returns `/health` and `/v1/public-key`.
 5. Confirm each L2 policy witness returns `/health`, `/v1/public-key`, and `/v1/policy`.
 6. Confirm registry returns `/registry/current`, `/registry/public-key`, `/policies/current`, and `/policies/epochs/email-policy-epoch-001`.
-7. Deploy `strata-email-mcp` with `WITNESS_URLS`, `POLICY_WITNESS_URLS`, `REGISTRY_URL`, and `POLICY_BUNDLE_URL`.
+7. Deploy `strata-email-mcp` with `WITNESS_URLS`, `POLICY_WITNESS_URLS`, `REGISTRY_URL`, `POLICY_BUNDLE_URL`, `TENANT_ID`, `OPERATOR_ID`, and `OPERATOR_ADMISSION_KEY_ID`.
 8. Confirm MCP health and OAuth metadata:
 
 ```bash

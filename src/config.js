@@ -44,6 +44,14 @@ export function loadConfig(env = process.env) {
       bundleUrl: trimSlash(env.POLICY_BUNDLE_URL || (registryUrl ? `${registryUrl}/policies/epochs/${policyBundleEpochId}` : "")),
       epochId: policyBundleEpochId
     },
+    tenant: {
+      id: env.TENANT_ID || "default"
+    },
+    operator: {
+      id: env.OPERATOR_ID || "operator:amotivv-demo",
+      admissionKeyId: env.OPERATOR_ADMISSION_KEY_ID || "operator-admission:amotivv-demo",
+      admissionKeyFile: env.OPERATOR_ADMISSION_KEY_FILE || `${dataDir}/keys/operator-admission.key.json`
+    },
     witnesses: parseWitnessUrls(env.WITNESS_URLS || "", "w"),
     policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p")
   };

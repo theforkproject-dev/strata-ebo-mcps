@@ -25,6 +25,15 @@ import { EMAIL_COMMITMENT_VERSION, EMAIL_PAYLOAD_VERSION, canonicalizeEmailInput
 import { createEmailProvider } from "../email/provider.js";
 import { createEmailTool } from "../email/tool.js";
 import {
+  OPERATOR_ADMISSION_SIGNATURE_SUBJECT_VERSION,
+  OPERATOR_ADMISSION_SIGNATURE_VERSION,
+  attachOperatorSignature,
+  loadOperatorAdmissionSigner,
+  operatorAdmissionCertificateBinding,
+  optionalOperatorAdmissionVerification,
+  verifyOperatorAdmissionManifest
+} from "../admission/operator-manifest.js";
+import {
   EMAIL_POLICY_BUNDLE_VERSION,
   EMAIL_POLICY_DECISION_VERSION,
   EMAIL_POLICY_POINTER_VERSION,
@@ -186,6 +195,13 @@ export async function gatewayStatus(config) {
       policy_url: policyUrl || null,
       rules: policyBundle.rules
     },
+    operator_admission: {
+      tenant_id: config.tenant.id,
+      operator_id: config.operator.id,
+      operator_key_id: config.operator.admissionKeyId,
+      manifest_scope: "tenant/default active email.send admission manifest",
+      signature_schema_version: OPERATOR_ADMISSION_SIGNATURE_VERSION
+    },
     registry,
     policy_witness_signing: policyWitnessSigningSemantics(),
     receipt_flow: emailReceiptFlow(),
@@ -225,6 +241,8 @@ function emailProtocolVersions() {
     policy_bundle_schema_version: EMAIL_POLICY_BUNDLE_VERSION,
     policy_decision_schema_version: EMAIL_POLICY_DECISION_VERSION,
     policy_pointer_schema_version: EMAIL_POLICY_POINTER_VERSION,
+    operator_admission_signature_schema_version: OPERATOR_ADMISSION_SIGNATURE_VERSION,
+    operator_admission_signature_subject_schema_version: OPERATOR_ADMISSION_SIGNATURE_SUBJECT_VERSION,
     policy_quorum_schema_version: "strata.email.policy_quorum.v1"
   };
 }
@@ -272,7 +290,7 @@ function policyWitnessSigningSemantics() {
   };
 }
 
-export async function runVerifiedEmailSend(input, config) {
+export async function runVerifiedEmailSend(input, config, requestContext = {}) {
   if (config.witnesses.length < 3) {
     throw new Error("email_send_verified requires three Level 1 witness URLs in WITNESS_URLS");
   }
@@ -308,7 +326,7 @@ export async function runVerifiedEmailSend(input, config) {
   writeJson(paths.policyDecision, policyQuorum);
 
   if (!policyQuorum.ok) {
-    return createPolicyDeniedCertificate({ config, outDir, paths, runId, certificateUrl, request, publicCommitment, policyQuorum, policyBundle });
+    return createPolicyDeniedCertificate({ config, requestContext, outDir, paths, runId, certificateUrl, request, publicCommitment, policyQuorum, policyBundle, policyUrl });
   }
 
   const keys = loadGatewayKeys(config);
@@ -332,19 +350,8 @@ export async function runVerifiedEmailSend(input, config) {
   const egressPolicy = createEgressPolicy(config);
   const policyHash = policyQuorum.policy_bundle_digest;
   const verifierProfile = createVerifierProfile({ profile_id: "profile.email-mcp.l1-l2.v1" });
-  const admissionManifest = createAdmissionManifest({
-    manifestId: "adm_email_mcp_v1",
-    governanceId: "gov_email_mcp_v1",
-    policyHash,
-    agent: tinfoilEvidence("mcp-agent", ["mcp://tools/*"], null),
-    gateway: tinfoilEvidence("email-gateway", ["strata://verified-actions/email.send"], egressPolicy),
-    verifier: tinfoilEvidence("email-verifier", ["verify://local/email"], null),
-    approvedTools: [{ tool_id: "email-api", audience: "email-api", methods: ["POST /v1/send-email"] }],
-    approvedDataSources: [],
-    approvedModels: [],
-    witnessSetId: "witness-set.email-mcp.l1+l2",
-    witnessThreshold: 2
-  });
+  const admissionManifest = createSignedEmailAdmissionManifest({ config, requestContext, policyBundle, policyUrl, policyHash, egressPolicy });
+  writeJson(paths.admissionManifest, admissionManifest);
   const provider = createEmailProvider(config.email);
   const tool = createEmailTool({ signer: keys.tool.signer, gatewayKeyring: keyring, provider });
   const gateway = new ActionGateway({
@@ -387,11 +394,12 @@ export async function runVerifiedEmailSend(input, config) {
     requireCheckpointTransparency: true
   });
   const policyBundleVerification = verifyPolicyBundleForQuorum(policyBundle, policyQuorum);
+  const operatorAdmission = verifyOperatorAdmissionManifest(admissionManifest);
   const ok = session.ok && checkpointResult.ok;
   const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
   const registryAuthority = registryBinding ? verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) : null;
-  const verified = ok && policyBundleVerification.ok && (!registryAuthority || registryAuthority.ok);
-  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, registry_authority: registryAuthority };
+  const verified = ok && policyBundleVerification.ok && operatorAdmission.ok && (!registryAuthority || registryAuthority.ok);
+  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
   const certificateBody = {
@@ -412,6 +420,7 @@ export async function runVerifiedEmailSend(input, config) {
       sent_at: toolResult.output.sent_at
     },
     commitment: publicCommitment,
+    admission: operatorAdmissionCertificateBinding(admissionManifest),
     registry: registryCertificateBinding(registryBinding),
     policy: {
       tier: "level-2-policy",
@@ -440,7 +449,7 @@ export async function runVerifiedEmailSend(input, config) {
       certificate: certificateUrl,
       bundle: `${certificateUrl}/bundle`
     },
-    errors: [...session.errors, ...checkpointResult.errors, ...policyBundleVerification.errors, ...(registryAuthority?.errors || [])]
+    errors: [...session.errors, ...checkpointResult.errors, ...policyBundleVerification.errors, ...operatorAdmission.errors, ...(registryAuthority?.errors || [])]
   };
   const certificateDigest = digestValue(certificateBody);
   const certificate = { ...certificateBody, certificate_digest: certificateDigest };
@@ -457,6 +466,7 @@ export async function runVerifiedEmailSend(input, config) {
     tool_output: toolResult.output,
     policy_quorum: policyQuorum,
     policy_bundle: policyBundleMetadata(policyBundle, policyUrl),
+    operator_admission: operatorAdmissionCertificateBinding(admissionManifest),
     registry: registryCertificateBinding(registryBinding),
     registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
@@ -487,6 +497,7 @@ export async function runVerifiedEmailSend(input, config) {
       checkpoint: paths.checkpoint,
       transparency_log: paths.transparencyLog,
       verification: paths.verification,
+      admission_manifest: paths.admissionManifest,
       policy_decision: paths.policyDecision,
       policy_bundle: paths.policyBundle,
       registry_epoch: paths.registryEpoch
@@ -495,7 +506,7 @@ export async function runVerifiedEmailSend(input, config) {
   };
 }
 
-async function createPolicyDeniedCertificate({ config, outDir, paths, runId, certificateUrl, request, publicCommitment, policyQuorum, policyBundle }) {
+async function createPolicyDeniedCertificate({ config, requestContext, outDir, paths, runId, certificateUrl, request, publicCommitment, policyQuorum, policyBundle, policyUrl }) {
   const keys = loadGatewayKeys(config);
   const keyring = {
     [keys.gateway.signer.keyId]: keys.gateway.publicKeyPem,
@@ -517,19 +528,8 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
   const egressPolicy = createEgressPolicy(config);
   const policyHash = policyQuorum.policy_bundle_digest;
   const verifierProfile = createVerifierProfile({ profile_id: "profile.email-mcp.l1-l2.denial.v1" });
-  const admissionManifest = createAdmissionManifest({
-    manifestId: "adm_email_mcp_v1",
-    governanceId: "gov_email_mcp_v1",
-    policyHash,
-    agent: tinfoilEvidence("mcp-agent", ["mcp://tools/*"], null),
-    gateway: tinfoilEvidence("email-gateway", ["strata://verified-actions/email.send"], egressPolicy),
-    verifier: tinfoilEvidence("email-verifier", ["verify://local/email"], null),
-    approvedTools: [{ tool_id: "email-api", audience: "email-api", methods: ["POST /v1/send-email"] }],
-    approvedDataSources: [],
-    approvedModels: [],
-    witnessSetId: "witness-set.email-mcp.l1+l2",
-    witnessThreshold: 2
-  });
+  const admissionManifest = createSignedEmailAdmissionManifest({ config, requestContext, policyBundle, policyUrl, policyHash, egressPolicy });
+  writeJson(paths.admissionManifest, admissionManifest);
   const gateway = new ActionGateway({
     log,
     signer: keys.gateway.signer,
@@ -587,11 +587,12 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
     requireCheckpointTransparency: true
   });
   const policyBundleVerification = verifyPolicyBundleForQuorum(policyBundle, policyQuorum);
-  const ok = session.ok && checkpointResult.ok && policyBundleVerification.ok && policyQuorum.decision === "deny";
+  const operatorAdmission = verifyOperatorAdmissionManifest(admissionManifest);
+  const ok = session.ok && checkpointResult.ok && policyBundleVerification.ok && operatorAdmission.ok && policyQuorum.decision === "deny";
   const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
   const registryAuthority = registryBinding ? verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) : null;
   const verified = ok && (!registryAuthority || registryAuthority.ok);
-  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum }, registry_authority: registryAuthority };
+  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum }, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
   const certificateBody = {
@@ -608,6 +609,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
       method: "POST /v1/send-email"
     },
     commitment: publicCommitment,
+    admission: operatorAdmissionCertificateBinding(admissionManifest),
     registry: registryCertificateBinding(registryBinding),
     policy: {
       tier: "level-2-policy",
@@ -639,7 +641,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
       certificate: certificateUrl,
       bundle: `${certificateUrl}/bundle`
     },
-    errors: [...session.errors, ...checkpointResult.errors, ...policyBundleVerification.errors, ...(registryAuthority?.errors || [])]
+    errors: [...session.errors, ...checkpointResult.errors, ...policyBundleVerification.errors, ...operatorAdmission.errors, ...(registryAuthority?.errors || [])]
   };
   const certificateDigest = digestValue(certificateBody);
   const certificate = { ...certificateBody, certificate_digest: certificateDigest };
@@ -653,6 +655,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
     out_dir: outDir,
     policy_quorum: policyQuorum,
     policy_bundle: policyBundleMetadata(policyBundle, policyQuorum.policy_url),
+    operator_admission: operatorAdmissionCertificateBinding(admissionManifest),
     registry: registryCertificateBinding(registryBinding),
     registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
@@ -678,6 +681,7 @@ async function createPolicyDeniedCertificate({ config, outDir, paths, runId, cer
       checkpoint: paths.checkpoint,
       transparency_log: paths.transparencyLog,
       verification: paths.verification,
+      admission_manifest: paths.admissionManifest,
       policy_decision: paths.policyDecision,
       policy_bundle: paths.policyBundle,
       registry_epoch: paths.registryEpoch
@@ -700,6 +704,11 @@ export function verifyReceivedEmail(input, config) {
   const receipts = readJsonl(artifacts.receipts);
   const keyring = JSON.parse(readFileSync(artifacts.keyring, "utf8"));
   const checkpoint = JSON.parse(readFileSync(artifacts.checkpoint, "utf8"));
+  const admissionManifest = artifacts.admission_manifest && existsSync(artifacts.admission_manifest)
+    ? JSON.parse(readFileSync(artifacts.admission_manifest, "utf8"))
+    : null;
+  const operatorAdmissionVerification = optionalOperatorAdmissionVerification(admissionManifest, { required: Boolean(certificate.admission) });
+  const operatorAdmissionCertificateErrors = operatorAdmissionCertificateBindingErrors(certificate, operatorAdmissionVerification);
   const policyBundle = artifacts.policy_bundle && existsSync(artifacts.policy_bundle)
     ? JSON.parse(readFileSync(artifacts.policy_bundle, "utf8"))
     : null;
@@ -725,7 +734,7 @@ export function verifyReceivedEmail(input, config) {
     requireCheckpointQuorum: true,
     requireCheckpointTransparency: true
   });
-  const certificateVerified = session.ok && checkpointResult.ok && policyBundleVerification.ok && digestValue(withoutDigest(certificate)) === certificate.certificate_digest;
+  const certificateVerified = session.ok && checkpointResult.ok && operatorAdmissionVerification.ok && operatorAdmissionCertificateErrors.length === 0 && policyBundleVerification.ok && digestValue(withoutDigest(certificate)) === certificate.certificate_digest;
   const result = contentMatch && certificateVerified ? "valid" : "invalid";
   const verifierKey = loadRecipientVerifierKey(config);
   const unsigned = {
@@ -744,12 +753,15 @@ export function verifyReceivedEmail(input, config) {
     received_payload_digest: publicCommitment.payload_digest,
     received_headers_present: Object.keys(receivedHeaders).length > 0,
     header_verification: headerVerification,
+    operator_admission_verification: operatorAdmissionVerification,
     policy_bundle_verification: policyBundleVerification,
     content_match: contentMatch,
     certificate_verified: certificateVerified,
     verification_errors: [
       ...session.errors.map((error) => `session: ${error}`),
       ...checkpointResult.errors.map((error) => `checkpoint: ${error}`),
+      ...operatorAdmissionVerification.errors.map((error) => `operator admission: ${error}`),
+      ...operatorAdmissionCertificateErrors.map((error) => `operator admission: ${error}`),
       ...policyBundleVerification.errors.map((error) => `policy bundle: ${error}`)
     ]
   };
@@ -879,6 +891,7 @@ function artifactPaths(config, outDir) {
     transparencyLog: join(outDir, "transparency-log.jsonl"),
     verification: join(outDir, "verification.json"),
     certificate: join(outDir, "certificate.json"),
+    admissionManifest: join(outDir, "admission-manifest.json"),
     policyDecision: join(outDir, "policy-decision.json"),
     policyBundle: join(outDir, "policy-bundle.json"),
     registryEpoch: join(outDir, "registry-epoch.json")
@@ -893,6 +906,7 @@ function publicArtifactUrls(config, runId) {
     checkpoint: `${baseUrl}/checkpoint.json`,
     transparency_log: `${baseUrl}/transparency-log.jsonl`,
     verification: `${baseUrl}/verification.json`,
+    admission_manifest: `${baseUrl}/admission-manifest.json`,
     policy_decision: `${baseUrl}/policy-decision.json`,
     policy_bundle: `${baseUrl}/policy-bundle.json`,
     registry_epoch: `${baseUrl}/registry-epoch.json`
@@ -1066,6 +1080,50 @@ function verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, 
   };
 }
 
+function createSignedEmailAdmissionManifest({ config, requestContext, policyBundle, policyUrl, policyHash, egressPolicy }) {
+  const tenantId = requestContext?.session?.tid || config.tenant.id;
+  const operatorSigner = loadOperatorAdmissionSigner(config);
+  const unsignedManifest = {
+    ...createAdmissionManifest({
+      manifestId: `adm_email_mcp_${tenantId}_v1`,
+      governanceId: "gov_email_mcp_v1",
+      policyHash,
+      agent: tinfoilEvidence("mcp-agent", ["mcp://tools/*"], null),
+      gateway: tinfoilEvidence("email-gateway", ["strata://verified-actions/email.send"], egressPolicy),
+      verifier: tinfoilEvidence("email-verifier", ["verify://local/email"], null),
+      approvedTools: [{ tool_id: "email-api", audience: "email-api", methods: ["POST /v1/send-email"] }],
+      approvedDataSources: [],
+      approvedModels: [],
+      witnessSetId: "witness-set.email-mcp.l1+l2",
+      witnessThreshold: 2
+    }),
+    tenant_id: tenantId,
+    operator_id: config.operator.id,
+    policy_bundle_url: policyUrl || null,
+    active_policy: policyBundleMetadata(policyBundle, policyUrl),
+    auth_context: admissionAuthContext(requestContext, tenantId)
+  };
+  return attachOperatorSignature(unsignedManifest, {
+    signer: operatorSigner.signer,
+    publicKeyPem: operatorSigner.publicKeyPem,
+    operatorId: config.operator.id,
+    tenantId
+  });
+}
+
+function admissionAuthContext(requestContext, tenantId) {
+  const session = requestContext?.session;
+  if (!session) {
+    return { auth_method: "none", tenant_id: tenantId };
+  }
+  return {
+    auth_method: session.auth_method || "mcp-session",
+    tenant_id: session.tid || tenantId,
+    client_id: session.aid || null,
+    scope: session.scope || null
+  };
+}
+
 async function loadConfiguredPolicyBundle(config) {
   return loadEmailPolicyBundle({
     file: config.policy?.bundleFile,
@@ -1109,6 +1167,23 @@ function verifyPolicyBundleForQuorum(policyBundle, policyQuorum) {
     policy_bundle_digest: policyBundleDigestValue,
     policy_url: policyQuorum.policy_url || null
   };
+}
+
+function operatorAdmissionCertificateBindingErrors(certificate, verification) {
+  if (!certificate.admission) {
+    return [];
+  }
+  const errors = [];
+  if (verification.signed_manifest_digest !== certificate.admission.admission_manifest_digest) {
+    errors.push("admission manifest digest does not match certificate admission binding");
+  }
+  if (verification.operator_key_id !== certificate.admission.operator_key_id) {
+    errors.push("operator key does not match certificate admission binding");
+  }
+  if (verification.tenant_id !== certificate.admission.tenant_id) {
+    errors.push("tenant does not match certificate admission binding");
+  }
+  return errors;
 }
 
 async function safeRegistryStatus(config) {
@@ -1206,6 +1281,7 @@ function resolveArtifactRef(ref, config) {
         "checkpoint.json": "checkpoint.json",
         "transparency-log.jsonl": "transparency-log.jsonl",
         "verification.json": "verification.json",
+        "admission-manifest.json": "admission-manifest.json",
         "policy-decision.json": "policy-decision.json",
         "policy-bundle.json": "policy-bundle.json",
         "registry-epoch.json": "registry-epoch.json"

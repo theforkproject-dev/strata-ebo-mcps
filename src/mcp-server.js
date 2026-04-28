@@ -20,7 +20,7 @@ export class EmailMcpServer {
       case "tools/list":
         return { tools: (await this.getActionRegistry()).tools };
       case "tools/call":
-        return this.callTool(request.params || {});
+        return this.callTool(request.params || {}, requestContext);
       case "resources/list":
         return { resources: this.listResources() };
       case "resources/read":
@@ -51,7 +51,7 @@ export class EmailMcpServer {
     };
   }
 
-  async callTool(params) {
+  async callTool(params, requestContext = {}) {
     const name = params.name;
     const args = params.arguments || {};
 
@@ -67,7 +67,7 @@ export class EmailMcpServer {
       }
 
       if (name === "email_send_verified" || name === "email.send_verified") {
-        const run = await runVerifiedEmailSend(args, this.config);
+        const run = await runVerifiedEmailSend(args, this.config, requestContext);
         if (run.certificate_ref) {
           this.latestCertificate = run;
         }
@@ -88,6 +88,7 @@ export class EmailMcpServer {
           verification_tiers: ["level-1-mechanical", "level-2-policy"],
           policy_quorum: run.policy_quorum,
           policy_bundle: run.policy_bundle,
+          operator_admission: run.operator_admission,
           registry: run.registry,
           registry_authority: run.registry_authority,
           receipt_count: run.receipt_count,

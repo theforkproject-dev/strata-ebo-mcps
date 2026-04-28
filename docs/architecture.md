@@ -12,10 +12,11 @@ The server combines two existing patterns:
 3. MCP client calls `email_send_verified` with recipient, subject, text/html, and required policy tags.
 4. The server canonicalizes the email into a digest-first payload commitment.
 5. Three Level 2 policy witnesses evaluate the canonical email against the active policy bundle and return signed allow/deny decisions.
-6. `ActionGateway.toolCall()` mints a single-use capability and asks three Level 1 witnesses for quorum over the `IntentGrant`; the L2 policy quorum is embedded as typed input to the grant.
-7. The email adapter verifies the capability, sends through Resend, and signs a `tool.execution` receipt.
-8. The gateway appends a witnessed observation and session end receipt.
-9. The server writes a checkpoint, verifies the resulting chain, and returns MCP structured content with provider metadata and certificate refs.
+6. The gateway creates an operator-signed admission manifest for tenant `default`, binding the active policy digest, policy URL, allowed action surface, and OAuth/MCP tenant context into `session.start`.
+7. `ActionGateway.toolCall()` mints a single-use capability and asks three Level 1 witnesses for quorum over the `IntentGrant`; the L2 policy quorum is embedded as typed input to the grant.
+8. The email adapter verifies the capability, sends through Resend, and signs a `tool.execution` receipt.
+9. The gateway appends a witnessed observation and session end receipt.
+10. The server writes a checkpoint, verifies the resulting chain, and returns MCP structured content with provider metadata and certificate refs.
 
 ## L2 Policy Witnesses
 
@@ -45,6 +46,18 @@ The demo registry is a separate service from the MCP gateway. It exposes:
 
 The registry signs a `turnstile.witness-registry-epoch.v1` object authorizing the six witness keys for workflow `email.send` and the active policy bundle digest. It also publishes a signed `strata.email.policy_pointer.v1` current-policy pointer. Certificates include the registry epoch id, digest, URL, authority key id, policy digest, and policy URL. Certificate bundles include `registry_epoch.json` and `policy_bundle.json` so downstream verifiers can check witness authority and policy-digest binding at signing time.
 
+## Operator Admission
+
+Each send or policy-denied attempt creates a signed `turnstile.admission-manifest.v1` for the active tenant. The manifest is signed by the operator key `operator-admission:amotivv-demo` using `strata.operator_admission_signature.v1`. The signed manifest binds:
+
+- tenant id and operator id
+- active policy digest and registry-hosted policy URL
+- approved MCP/action surface for `email.send`
+- configured L1/L2 witness set id and threshold
+- OAuth/MCP auth context without storing bearer tokens
+
+The `session.start` receipt commits to the signed admission manifest digest through the existing TURNSTILE `admission_manifest_hash`. Certificates include the admission binding and expose `admission-manifest.json` as a public artifact so verifiers can check operator signature, manifest digest binding, and policy digest binding.
+
 ## Recipient Verification
 
 `email_verify_received` models the downstream verification loop. A recipient or recipient-side agent provides the received canonical email fields plus a certificate ref. The tool recomputes the digest, verifies the Strata receipt chain/checkpoint, compares the payload digest, and writes a signed verification receipt.
@@ -67,7 +80,7 @@ The same metadata is returned in the MCP tool result, so an agent can show the s
 The public certificate endpoint exposes both the certificate summary and a complete verifier-ready bundle:
 
 - `GET /certificates/:id` returns `certificate.json`.
-- `GET /certificates/:id/bundle` returns certificate, receipt log, keyring, checkpoint, transparency log, verification result, policy decision, policy bundle, and matching recipient verification receipts.
+- `GET /certificates/:id/bundle` returns certificate, receipt log, keyring, checkpoint, transparency log, verification result, admission manifest, policy decision, policy bundle, and matching recipient verification receipts.
 - The bundle also contains the signed registry epoch used to authorize witness keys at signing time.
 - `GET /certificates/:id/artifacts/:name` exposes individual artifacts for tooling that wants streaming or partial retrieval.
 

@@ -9,11 +9,12 @@ export class SessionManager {
     this.ttlMs = ttlMs;
   }
 
-  createSession({ agentId = "mcp-client" } = {}) {
+  createSession({ agentId = "mcp-client", tenantId = "default" } = {}) {
     const now = Date.now();
     const payload = {
       sid: randomBytes(16).toString("hex"),
       aid: agentId,
+      tid: tenantId,
       iat: now,
       exp: now + this.ttlMs
     };

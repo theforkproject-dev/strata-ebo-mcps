@@ -25,6 +25,7 @@ export const {
   verifyWitnessRegistryEpoch,
   witnessRegistryEpochDigest,
   WITNESS_REGISTRY_EPOCH_VERSION,
+  admissionManifestDigest,
   verifySession,
   writeCheckpoint
 } = strataModule;

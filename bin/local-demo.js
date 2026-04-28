@@ -92,6 +92,8 @@ try {
       has_keyring: Boolean(bundle.keyring),
       has_policy_decision: Boolean(bundle.policy_decision),
       has_policy_bundle: Boolean(bundle.policy_bundle),
+      has_admission_manifest: Boolean(bundle.admission_manifest),
+      operator_admission_signature_verified: bundle.certificate.admission?.signature_verified,
       policy_url: bundle.certificate.policy.policy_url
     },
     recipient_verification: recipientVerification.result.structuredContent
