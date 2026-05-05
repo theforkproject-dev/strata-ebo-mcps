@@ -409,6 +409,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
   const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, operator_registry: operatorRegistryBinding?.verification || null, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
+  const tinfoilAttestation = await certificateTinfoilEvidence(config);
   const certificateBody = {
     version: "strata.email.certificate.v1",
     run_id: runId,
@@ -430,7 +431,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
     authority_pins: authorityPins(config, registryBinding, policyBundle),
-    tinfoil_attestation: certificateTinfoilEvidence(config),
+    tinfoil_attestation: tinfoilAttestation,
     policy: {
       tier: "level-2-policy",
       decision: policyQuorum.decision,
@@ -610,6 +611,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
   const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, operator_registry: operatorRegistryBinding?.verification || null, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum }, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
+  const tinfoilAttestation = await certificateTinfoilEvidence(config);
   const certificateBody = {
     version: "strata.email.policy_denial_certificate.v1",
     run_id: runId,
@@ -627,7 +629,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
     authority_pins: authorityPins(config, registryBinding, policyBundle),
-    tinfoil_attestation: certificateTinfoilEvidence(config),
+    tinfoil_attestation: tinfoilAttestation,
     policy: {
       tier: "level-2-policy",
       decision: policyQuorum.decision,
@@ -1324,6 +1326,14 @@ function createEgressPolicy(config) {
   if (config.email.provider === "resend") {
     allowedUrls.push(config.email.resendBaseUrl);
   }
+  if (config.attestation?.gateway?.attestationUrl) {
+    allowedUrls.push(config.attestation.gateway.attestationUrl);
+  }
+  for (const witness of config.attestation?.l1Witnesses || []) {
+    if (witness.attestationUrl) {
+      allowedUrls.push(witness.attestationUrl);
+    }
+  }
   return {
     mode: "email-provider-l1-and-l2-witness-urls-only",
     allowed_urls: allowedUrls.sort(),
@@ -1333,9 +1343,9 @@ function createEgressPolicy(config) {
   };
 }
 
-function certificateTinfoilEvidence(config) {
-  const gateway = measuredRuntimeSummary(config.attestation?.gateway);
-  const l1Witnesses = (config.attestation?.l1Witnesses || []).map(measuredRuntimeSummary).filter(Boolean);
+async function certificateTinfoilEvidence(config) {
+  const gateway = await measuredRuntimeSummary(config.attestation?.gateway);
+  const l1Witnesses = (await Promise.all((config.attestation?.l1Witnesses || []).map(measuredRuntimeSummary))).filter(Boolean);
   if (!gateway && l1Witnesses.length === 0) {
     return null;
   }
@@ -1347,10 +1357,11 @@ function certificateTinfoilEvidence(config) {
   };
 }
 
-function measuredRuntimeSummary(evidence) {
+async function measuredRuntimeSummary(evidence) {
   if (!evidence || (!evidence.attestationDigest && !evidence.configRepo && !evidence.configTag)) {
     return null;
   }
+  const observedAttestation = await fetchObservedTinfoilAttestation(evidence);
   return {
     platform: "tinfoil-containers",
     witness_id: evidence.witnessId || null,
@@ -1358,24 +1369,67 @@ function measuredRuntimeSummary(evidence) {
     config_repo: evidence.configRepo || null,
     config_tag: evidence.configTag || null,
     image_digest: evidence.imageDigest || null,
-    attestation_digest: evidence.attestationDigest || null,
-    attestation_ref: evidence.attestationRef || tinfoilReleaseRef(evidence),
+    attestation_digest: evidence.attestationDigest || observedAttestation?.attestation_document_digest || null,
+    attestation_ref: evidence.attestationRef || evidence.attestationUrl || tinfoilReleaseRef(evidence),
     sigstore_bundle_ref: evidence.sigstoreBundleRef || tinfoilReleaseRef(evidence),
+    observed_attestation: observedAttestation,
     debug_mode: false
   };
 }
 
 function tinfoilEvidence(evidence, containerName, shimPaths, egressPolicy) {
-  const measured = measuredRuntimeSummary(evidence);
   return createTinfoilEvidence({
-    containerName: measured?.container_name || containerName,
-    imageDigest: measured?.image_digest || `sha256:${sha256Hex(`email-mcp:${containerName}`)}`,
-    configHash: measured?.attestation_digest || sha256Hex(`email-mcp-config:${containerName}`),
-    attestationRef: measured?.attestation_ref || `demo://email-mcp/${containerName}/attestation-placeholder`,
-    sigstoreBundleRef: measured?.sigstore_bundle_ref || `sigstore://email-mcp/${containerName}`,
+    containerName: evidence?.containerName || containerName,
+    imageDigest: evidence?.imageDigest || `sha256:${sha256Hex(`email-mcp:${containerName}`)}`,
+    configHash: evidence?.attestationDigest || sha256Hex(`email-mcp-config:${containerName}`),
+    attestationRef: evidence?.attestationRef || evidence?.attestationUrl || `demo://email-mcp/${containerName}/attestation-placeholder`,
+    sigstoreBundleRef: evidence?.sigstoreBundleRef || tinfoilReleaseRef(evidence) || `sigstore://email-mcp/${containerName}`,
     shimPaths,
     egressPolicy
   });
+}
+
+async function fetchObservedTinfoilAttestation(evidence) {
+  if (!evidence?.attestationUrl) {
+    return null;
+  }
+  const observedAt = new Date().toISOString();
+  try {
+    const response = await fetch(evidence.attestationUrl, { headers: { accept: "application/json" } });
+    const text = await response.text();
+    let document;
+    try {
+      document = JSON.parse(text);
+    } catch (error) {
+      throw new Error(`attestation response was not JSON: ${error.message}`);
+    }
+    if (!response.ok) {
+      throw new Error(document.error || `attestation endpoint returned ${response.status}`);
+    }
+    if (!document.format || !document.body) {
+      throw new Error("attestation document must include format and body");
+    }
+    return {
+      status: "ok",
+      observed_at: observedAt,
+      source_url: evidence.attestationUrl,
+      format: document.format,
+      attestation_document_digest: digestValue(document),
+      body_digest: sha256Hex(document.body),
+      body_length: document.body.length,
+      digest_semantics: "sha256 over Strata canonical JSON for the Tinfoil /.well-known/tinfoil-attestation document"
+    };
+  } catch (error) {
+    if (evidence.attestationRequired) {
+      throw error;
+    }
+    return {
+      status: "error",
+      observed_at: observedAt,
+      source_url: evidence.attestationUrl,
+      error: error.message
+    };
+  }
 }
 
 function tinfoilReleaseRef(evidence) {

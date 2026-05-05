@@ -95,6 +95,8 @@ export function loadConfig(env = process.env) {
         configTag: env.GATEWAY_TINFOIL_CONFIG_TAG || "",
         imageDigest: normalizeImageDigest(env.GATEWAY_TINFOIL_IMAGE_DIGEST || ""),
         attestationDigest: env.GATEWAY_TINFOIL_ATTESTATION_DIGEST || "",
+        attestationUrl: env.GATEWAY_TINFOIL_ATTESTATION_URL || "",
+        attestationRequired: truthy(env.GATEWAY_TINFOIL_ATTESTATION_REQUIRED),
         attestationRef: env.GATEWAY_TINFOIL_ATTESTATION_REF || "",
         sigstoreBundleRef: env.GATEWAY_TINFOIL_SIGSTORE_BUNDLE_REF || ""
       },
@@ -158,6 +160,8 @@ function normalizeL1Evidence(item) {
     configTag: item.configTag || item.config_tag || "",
     imageDigest: normalizeImageDigest(item.imageDigest || item.image_digest || ""),
     attestationDigest: item.attestationDigest || item.attestation_digest || "",
+    attestationUrl: item.attestationUrl || item.attestation_url || "",
+    attestationRequired: Boolean(item.attestationRequired || item.attestation_required),
     attestationRef: item.attestationRef || item.attestation_ref || "",
     sigstoreBundleRef: item.sigstoreBundleRef || item.sigstore_bundle_ref || ""
   };
