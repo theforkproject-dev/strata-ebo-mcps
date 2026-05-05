@@ -231,7 +231,9 @@ function serveCertificateArtifact(response, runDir, artifactName) {
     "operator-registry.json": { path: "operator-registry.json", type: "application/json" },
     "policy-decision.json": { path: "policy-decision.json", type: "application/json" },
     "policy-bundle.json": { path: "policy-bundle.json", type: "application/json" },
-    "registry-epoch.json": { path: "registry-epoch.json", type: "application/json" }
+    "registry-epoch.json": { path: "registry-epoch.json", type: "application/json" },
+    "gateway-attestation.json": { path: "gateway-attestation.json", type: "application/json" },
+    "l1-witness-attestations.json": { path: "l1-witness-attestations.json", type: "application/json" }
   };
   const artifact = artifactMap[artifactName];
   if (!artifact) {
@@ -262,6 +264,8 @@ function loadCertificateBundle(runId, runDir) {
     policy_decision: readOptionalJson(join(runDir, "policy-decision.json")),
     policy_bundle: readOptionalJson(join(runDir, "policy-bundle.json")),
     registry_epoch: readOptionalJson(join(runDir, "registry-epoch.json")),
+    gateway_attestation: readOptionalJson(join(runDir, "gateway-attestation.json")),
+    l1_witness_attestations: readOptionalJson(join(runDir, "l1-witness-attestations.json")),
     recipient_verifications: loadRecipientVerifications(certificate, runId)
   };
 }

@@ -409,7 +409,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
   const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, operator_registry: operatorRegistryBinding?.verification || null, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
-  const tinfoilAttestation = await certificateTinfoilEvidence(config);
+  const tinfoilAttestation = await certificateTinfoilEvidence(config, paths);
   const certificateBody = {
     version: "strata.email.certificate.v1",
     run_id: runId,
@@ -611,7 +611,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
   const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, operator_registry: operatorRegistryBinding?.verification || null, policy_denial: { ok: policyQuorum.decision === "deny", policy_quorum: policyQuorum }, registry_authority: registryAuthority };
   writeJson(paths.verification, verification);
 
-  const tinfoilAttestation = await certificateTinfoilEvidence(config);
+  const tinfoilAttestation = await certificateTinfoilEvidence(config, paths);
   const certificateBody = {
     version: "strata.email.policy_denial_certificate.v1",
     run_id: runId,
@@ -923,7 +923,9 @@ function artifactPaths(config, outDir) {
     operatorRegistry: join(outDir, "operator-registry.json"),
     policyDecision: join(outDir, "policy-decision.json"),
     policyBundle: join(outDir, "policy-bundle.json"),
-    registryEpoch: join(outDir, "registry-epoch.json")
+    registryEpoch: join(outDir, "registry-epoch.json"),
+    gatewayAttestation: join(outDir, "gateway-attestation.json"),
+    l1WitnessAttestations: join(outDir, "l1-witness-attestations.json")
   };
 }
 
@@ -939,7 +941,9 @@ function publicArtifactUrls(config, runId) {
     operator_registry: `${baseUrl}/operator-registry.json`,
     policy_decision: `${baseUrl}/policy-decision.json`,
     policy_bundle: `${baseUrl}/policy-bundle.json`,
-    registry_epoch: `${baseUrl}/registry-epoch.json`
+    registry_epoch: `${baseUrl}/registry-epoch.json`,
+    gateway_attestation: `${baseUrl}/gateway-attestation.json`,
+    l1_witness_attestations: `${baseUrl}/l1-witness-attestations.json`
   };
 }
 
@@ -1343,12 +1347,15 @@ function createEgressPolicy(config) {
   };
 }
 
-async function certificateTinfoilEvidence(config) {
-  const gateway = await measuredRuntimeSummary(config.attestation?.gateway);
-  const l1Witnesses = (await Promise.all((config.attestation?.l1Witnesses || []).map(measuredRuntimeSummary))).filter(Boolean);
+async function certificateTinfoilEvidence(config, paths = null) {
+  const gatewayObserved = await measuredRuntimeSummary(config.attestation?.gateway);
+  const l1Observed = (await Promise.all((config.attestation?.l1Witnesses || []).map(measuredRuntimeSummary))).filter(Boolean);
+  const gateway = gatewayObserved?.summary || null;
+  const l1Witnesses = l1Observed.map((item) => item.summary).filter(Boolean);
   if (!gateway && l1Witnesses.length === 0) {
     return null;
   }
+  writeTinfoilAttestationArtifacts(paths, gatewayObserved, l1Observed);
   return {
     version: "strata.tinfoil_attestation_binding.v1",
     gateway,
@@ -1363,18 +1370,44 @@ async function measuredRuntimeSummary(evidence) {
   }
   const observedAttestation = await fetchObservedTinfoilAttestation(evidence);
   return {
+    document: observedAttestation?.document || null,
+    summary: {
     platform: "tinfoil-containers",
     witness_id: evidence.witnessId || null,
     container_name: evidence.containerName || null,
     config_repo: evidence.configRepo || null,
     config_tag: evidence.configTag || null,
     image_digest: evidence.imageDigest || null,
-    attestation_digest: evidence.attestationDigest || observedAttestation?.attestation_document_digest || null,
+    attestation_digest: evidence.attestationDigest || observedAttestation?.summary?.attestation_document_digest || null,
     attestation_ref: evidence.attestationRef || evidence.attestationUrl || tinfoilReleaseRef(evidence),
     sigstore_bundle_ref: evidence.sigstoreBundleRef || tinfoilReleaseRef(evidence),
-    observed_attestation: observedAttestation,
+    observed_attestation: observedAttestation?.summary || null,
     debug_mode: false
+    }
   };
+}
+
+function writeTinfoilAttestationArtifacts(paths, gatewayObserved, l1Observed) {
+  if (!paths) {
+    return;
+  }
+  if (gatewayObserved?.document) {
+    writeJson(paths.gatewayAttestation, {
+      version: "strata.tinfoil_observed_attestation.v1",
+      runtime: gatewayObserved.summary,
+      document: gatewayObserved.document
+    });
+  }
+  const l1Documents = l1Observed.filter((item) => item.document).map((item) => ({
+    runtime: item.summary,
+    document: item.document
+  }));
+  if (l1Documents.length > 0) {
+    writeJson(paths.l1WitnessAttestations, {
+      version: "strata.tinfoil_observed_l1_attestations.v1",
+      witnesses: l1Documents
+    });
+  }
 }
 
 function tinfoilEvidence(evidence, containerName, shimPaths, egressPolicy) {
@@ -1410,6 +1443,8 @@ async function fetchObservedTinfoilAttestation(evidence) {
       throw new Error("attestation document must include format and body");
     }
     return {
+      document,
+      summary: {
       status: "ok",
       observed_at: observedAt,
       source_url: evidence.attestationUrl,
@@ -1418,16 +1453,20 @@ async function fetchObservedTinfoilAttestation(evidence) {
       body_digest: sha256Hex(document.body),
       body_length: document.body.length,
       digest_semantics: "sha256 over Strata canonical JSON for the Tinfoil /.well-known/tinfoil-attestation document"
+      }
     };
   } catch (error) {
     if (evidence.attestationRequired) {
       throw error;
     }
     return {
+      document: null,
+      summary: {
       status: "error",
       observed_at: observedAt,
       source_url: evidence.attestationUrl,
       error: error.message
+      }
     };
   }
 }
@@ -1484,7 +1523,9 @@ function resolveArtifactRef(ref, config) {
         "operator-registry.json": "operator-registry.json",
         "policy-decision.json": "policy-decision.json",
         "policy-bundle.json": "policy-bundle.json",
-        "registry-epoch.json": "registry-epoch.json"
+        "registry-epoch.json": "registry-epoch.json",
+        "gateway-attestation.json": "gateway-attestation.json",
+        "l1-witness-attestations.json": "l1-witness-attestations.json"
       };
       if (artifactMap[artifactName]) {
         return join(config.dataDir, "runs", runId, artifactMap[artifactName]);
