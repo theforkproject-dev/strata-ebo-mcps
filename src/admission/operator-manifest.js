@@ -11,8 +11,11 @@ export const OPERATOR_ADMISSION_SIGNATURE_SUBJECT_VERSION = "strata.operator_adm
 
 export function loadOperatorAdmissionSigner(config) {
   return loadOrCreateEd25519Signer({
-    keyFile: config.operator.admissionKeyFile,
-    keyId: config.operator.admissionKeyId
+    keyFile: config.operator.admissionKeyJson || config.operator.admissionPrivateKeyPem ? null : config.operator.admissionKeyFile,
+    keyId: config.operator.admissionKeyId,
+    keyJson: config.operator.admissionKeyJson,
+    privateKeyPem: config.operator.admissionPrivateKeyPem,
+    publicKeyPem: config.operator.admissionPublicKeyPem
   });
 }
 

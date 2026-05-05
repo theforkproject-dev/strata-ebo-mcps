@@ -64,6 +64,8 @@ export function loadConfig(env = process.env) {
       id: env.OPERATOR_ID || "operator:amotivv-demo",
       admissionKeyId: env.OPERATOR_ADMISSION_KEY_ID || "operator-admission:amotivv-demo",
       admissionKeyFile: env.OPERATOR_ADMISSION_KEY_FILE || `${dataDir}/keys/operator-admission.key.json`,
+      admissionKeyJson: env.OPERATOR_ADMISSION_KEY_JSON || "",
+      admissionPrivateKeyPem: env.OPERATOR_ADMISSION_PRIVATE_KEY_PEM || "",
       admissionPublicKeyPem: operatorAdmissionPublicKeyPem
     },
     witnesses: parseWitnessUrls(env.WITNESS_URLS || "", "w"),
