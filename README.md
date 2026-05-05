@@ -44,6 +44,22 @@ npm run demo:dry-run
 
 The demo starts three non-TEE local L1 HTTP witness servers and three local L2 policy witness servers, starts this MCP server, performs an L2-denied send attempt, performs a successful verified send, and writes artifacts under `artifacts/email-mcp/`.
 
+## Live Tinfoil L1 Witness Demo
+
+```bash
+npm run demo:tinfoil-witness
+```
+
+This demo keeps the MCP gateway and L2 policy witnesses local, but routes Level 1 mechanical witness signatures to the live Tinfoil witness at `strata-witness-poc-1.amotivv.containers.tinfoil.dev` using gateway-signed `WitnessSignRequest v1` and S3 Object Lock guard evidence.
+
+It requires the gateway key bundle from the Tinfoil witness bootstrap:
+
+```text
+../strata-ebo-turnstile/artifacts/tinfoil-witness-poc/gateway-registry-keys.json
+```
+
+The current live witness runtime still has a compatibility workflow allowlist of `demo.payment`; the witness registry also authorizes `email.send`. After the witness is relaunched with registry-only workflow enforcement, set `WITNESS_WORKFLOW_ID=email.send` for this demo.
+
 ## Real Resend Send
 
 Create `.env` from `.env.example`, set:

@@ -11,6 +11,8 @@ export function loadConfig(env = process.env) {
   const policyBundleEpochId = env.POLICY_BUNDLE_EPOCH_ID || "email-policy-epoch-001";
   const operatorAdmissionPublicKeyPem = env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM
     || (env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64 ? Buffer.from(env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64, "base64").toString("utf8") : "");
+  const gatewayKeyBundle = readOptionalJson(env.GATEWAY_KEY_BUNDLE_FILE || env.TINFOIL_WITNESS_POC_GATEWAY_KEY_FILE || "");
+  const bundledGateway = gatewayKeyBundle?.gateway ?? null;
 
   return {
     host: env.HOST || "127.0.0.1",
@@ -49,6 +51,15 @@ export function loadConfig(env = process.env) {
     tenant: {
       id: env.TENANT_ID || "default"
     },
+    gateway: {
+      id: env.GATEWAY_ID || bundledGateway?.gateway_id || "gateway:email-mcp",
+      keyId: env.GATEWAY_KEY_ID || bundledGateway?.key_id || "gateway:email-mcp",
+      keyFile: env.GATEWAY_KEY_FILE || `${dataDir}/keys/gateway.key.json`,
+      keyJson: env.GATEWAY_KEY_JSON || "",
+      privateKeyPem: env.GATEWAY_PRIVATE_KEY_PEM || bundledGateway?.private_key_pem || "",
+      publicKeyPem: env.GATEWAY_PUBLIC_KEY_PEM || bundledGateway?.public_key_pem || "",
+      keyBundleFile: env.GATEWAY_KEY_BUNDLE_FILE || env.TINFOIL_WITNESS_POC_GATEWAY_KEY_FILE || ""
+    },
     operator: {
       id: env.OPERATOR_ID || "operator:amotivv-demo",
       admissionKeyId: env.OPERATOR_ADMISSION_KEY_ID || "operator-admission:amotivv-demo",
@@ -56,7 +67,19 @@ export function loadConfig(env = process.env) {
       admissionPublicKeyPem: operatorAdmissionPublicKeyPem
     },
     witnesses: parseWitnessUrls(env.WITNESS_URLS || "", "w"),
-    policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p")
+    witness: {
+      threshold: positiveInt(env.WITNESS_THRESHOLD || env.L1_WITNESS_THRESHOLD || 2, "WITNESS_THRESHOLD"),
+      signedRequests: {
+        enabled: truthy(env.GATEWAY_SIGNED_WITNESS_REQUESTS_ENABLED || env.WITNESS_SIGN_REQUESTS_ENABLED),
+        witnessEpochId: env.WITNESS_EPOCH_ID || "",
+        registryEpochId: env.REGISTRY_EPOCH_ID || "",
+        workflowId: env.WITNESS_WORKFLOW_ID || "email.send"
+      }
+    },
+    policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p"),
+    policyWitness: {
+      threshold: positiveInt(env.POLICY_WITNESS_THRESHOLD || env.L2_POLICY_WITNESS_THRESHOLD || 2, "POLICY_WITNESS_THRESHOLD")
+    }
   };
 }
 
@@ -76,6 +99,25 @@ function parseCsv(value) {
 
 function trimSlash(value) {
   return String(value).replace(/\/$/, "");
+}
+
+function truthy(value) {
+  return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function positiveInt(value, label) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function readOptionalJson(path) {
+  if (!path || !existsSync(path)) {
+    return null;
+  }
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 
 function loadDotEnv(env) {

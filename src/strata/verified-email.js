@@ -88,7 +88,7 @@ export async function createActionRegistry(config) {
       {
         name: "email_send_verified",
         title: "Send Verified Email",
-        description: "Send an email through the Strata Verified Action Gateway. Assurance mode: witnessed. Witness tiers: Level 1 mechanical + Level 2 policy. Quorum: 2-of-3 at each tier.",
+        description: `Send an email through the Strata Verified Action Gateway. Assurance mode: witnessed. Witness tiers: Level 1 mechanical + Level 2 policy. Quorum: ${config.witness.threshold}-of-${config.witnesses.length} L1 and ${config.policyWitness.threshold}-of-${config.policyWitnesses.length} L2.`,
         inputSchema: emailInputSchema(),
         outputSchema: {
           type: "object",
@@ -140,8 +140,8 @@ export async function createActionRegistry(config) {
         assurance: {
           mode: "witnessed",
           required_witness_tiers: ["mechanical", "policy"],
-          mechanical_quorum: { threshold: 2, set: "witness-set.email-mcp.l1" },
-          policy_quorum: { threshold: 2, set: "witness-set.email-mcp.l2-policy" }
+          mechanical_quorum: { threshold: config.witness.threshold, set: "witness-set.email-mcp.l1" },
+          policy_quorum: { threshold: config.policyWitness.threshold, set: "witness-set.email-mcp.l2-policy" }
         },
         policy: {
           policy_bundle_hash: policyHash,
@@ -171,20 +171,23 @@ export async function gatewayStatus(config) {
   const policyWitnessChecks = await Promise.all(config.policyWitnesses.map(checkPolicyWitness));
   const healthyWitnesses = witnessChecks.filter((witness) => witness.ok).length;
   const healthyPolicyWitnesses = policyWitnessChecks.filter((witness) => witness.ok).length;
-  const requiredWitnesses = 2;
+  const requiredWitnesses = config.witness.threshold;
+  const requiredPolicyWitnesses = config.policyWitness.threshold;
   const policyBundle = await loadConfiguredPolicyBundle(config);
   const policyUrl = configuredPolicyUrl(config, policyBundle);
   const registry = await safeRegistryStatus(config);
   return {
-    status: healthyWitnesses >= requiredWitnesses && healthyPolicyWitnesses >= requiredWitnesses && config.email.provider ? "ready" : "not_ready",
+    status: healthyWitnesses >= requiredWitnesses && healthyPolicyWitnesses >= requiredPolicyWitnesses && config.email.provider ? "ready" : "not_ready",
     checked_at: new Date().toISOString(),
     protocol: emailProtocolVersions(),
     assurance: {
       mode: "witnessed",
       witness_tiers: ["level-1-mechanical", "level-2-policy"],
-      mechanical_witness_quorum_required: "2-of-3",
+      mechanical_witness_quorum_required: `${requiredWitnesses}-of-${config.witnesses.length}`,
       mechanical_witness_quorum_available: `${healthyWitnesses}-of-${config.witnesses.length}`,
-      policy_witness_quorum_required: "2-of-3",
+      signed_l1_witness_requests: config.witness.signedRequests.enabled,
+      signed_l1_witness_workflow_id: config.witness.signedRequests.workflowId || null,
+      policy_witness_quorum_required: `${requiredPolicyWitnesses}-of-${config.policyWitnesses.length}`,
       policy_witness_quorum_available: `${healthyPolicyWitnesses}-of-${config.policyWitnesses.length}`
     },
     policy: {
@@ -291,11 +294,11 @@ function policyWitnessSigningSemantics() {
 }
 
 export async function runVerifiedEmailSend(input, config, requestContext = {}) {
-  if (config.witnesses.length < 3) {
-    throw new Error("email_send_verified requires three Level 1 witness URLs in WITNESS_URLS");
+  if (config.witnesses.length < config.witness.threshold) {
+    throw new Error(`email_send_verified requires at least ${config.witness.threshold} Level 1 witness URL(s) in WITNESS_URLS`);
   }
-  if (config.policyWitnesses.length < 3) {
-    throw new Error("email_send_verified requires three Level 2 policy witness URLs in POLICY_WITNESS_URLS");
+  if (config.policyWitnesses.length < config.policyWitness.threshold) {
+    throw new Error(`email_send_verified requires at least ${config.policyWitness.threshold} Level 2 policy witness URL(s) in POLICY_WITNESS_URLS`);
   }
 
   const runId = `email_${Date.now()}_${randomUUID().slice(0, 8)}`;
@@ -321,7 +324,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     commitment: publicCommitment,
     policyBundle,
     policyUrl,
-    threshold: 2
+    threshold: config.policyWitness.threshold
   });
   writeJson(paths.policyDecision, policyQuorum);
 
@@ -335,7 +338,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     [keys.tool.signer.keyId]: keys.tool.publicKeyPem,
     [keys.transparency.signer.keyId]: keys.transparency.publicKeyPem
   };
-  const witnesses = await createWitnessClients(config.witnesses, keyring);
+  const witnesses = await createWitnessClients(config.witnesses, keyring, config, keys.gateway.signer);
   writeJson(paths.keyring, keyring);
 
   const log = new JsonlReceiptLog(paths.receipts);
@@ -362,9 +365,9 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     verifierProfile,
     admissionManifest,
     witnesses,
-    sideEffectWitnessThreshold: 2,
-    sessionBoundaryWitnessThreshold: 2,
-    checkpointWitnessThreshold: 2,
+    sideEffectWitnessThreshold: config.witness.threshold,
+    sessionBoundaryWitnessThreshold: config.witness.threshold,
+    checkpointWitnessThreshold: config.witness.threshold,
     transparencyLog
   });
 
@@ -441,7 +444,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     proof: {
       assurance_mode: "witnessed",
       witness_tiers: ["level-1-mechanical", "level-2-policy"],
-      mechanical_witness_quorum: "2-of-3",
+      mechanical_witness_quorum: `${config.witness.threshold}-of-${config.witnesses.length}`,
       policy_witness_quorum: `${policyQuorum.allow_count}-of-${policyQuorum.total_witnesses}`,
       receipt_count: receipts.length,
       checkpoint_id: checkpoint.statement.checkpoint_id,
@@ -474,6 +477,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     registry: registryCertificateBinding(registryBinding),
     registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
+    mechanical_witness_quorum: `${config.witness.threshold}-of-${config.witnesses.length}`,
     certificate_transmission: {
       in_band_headers: toolResult.output.headers_committed,
       header_semantics: {
@@ -518,7 +522,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     [keys.tool.signer.keyId]: keys.tool.publicKeyPem,
     [keys.transparency.signer.keyId]: keys.transparency.publicKeyPem
   };
-  const witnesses = await createWitnessClients(config.witnesses, keyring);
+  const witnesses = await createWitnessClients(config.witnesses, keyring, config, keys.gateway.signer);
   writeJson(paths.keyring, keyring);
 
   const log = new JsonlReceiptLog(paths.receipts);
@@ -544,8 +548,8 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     admissionManifest,
     witnesses,
     sideEffectWitnessThreshold: 0,
-    sessionBoundaryWitnessThreshold: 2,
-    checkpointWitnessThreshold: 2,
+    sessionBoundaryWitnessThreshold: config.witness.threshold,
+    checkpointWitnessThreshold: config.witness.threshold,
     transparencyLog
   });
 
@@ -636,7 +640,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     proof: {
       assurance_mode: "policy_denied",
       witness_tiers: ["level-1-mechanical", "level-2-policy"],
-      mechanical_boundary_quorum: "2-of-3",
+      mechanical_boundary_quorum: `${config.witness.threshold}-of-${config.witnesses.length}`,
       policy_witness_quorum: `${policyQuorum.allow_count}-of-${policyQuorum.total_witnesses}`,
       receipt_count: receipts.length,
       checkpoint_id: checkpoint.statement.checkpoint_id,
@@ -668,6 +672,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     registry: registryCertificateBinding(registryBinding),
     registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
+    mechanical_witness_quorum: `${config.witness.threshold}-of-${config.witnesses.length}`,
     commitment: publicCommitment,
     certificate_ref: certificateUrl,
     certificate_url: certificateUrl,
@@ -936,7 +941,13 @@ function loadGatewayKeys(config) {
   const keyDir = join(config.dataDir, "keys");
   mkdirSync(keyDir, { recursive: true });
   return {
-    gateway: loadOrCreateEd25519Signer({ keyFile: join(keyDir, "gateway.key.json"), keyId: "gateway:email-mcp" }),
+    gateway: loadOrCreateEd25519Signer({
+      keyFile: config.gateway.keyJson || config.gateway.privateKeyPem ? null : config.gateway.keyFile || join(keyDir, "gateway.key.json"),
+      keyId: config.gateway.keyId,
+      keyJson: config.gateway.keyJson,
+      privateKeyPem: config.gateway.privateKeyPem,
+      publicKeyPem: config.gateway.publicKeyPem
+    }),
     tool: loadOrCreateEd25519Signer({ keyFile: join(keyDir, "email-tool.key.json"), keyId: "tool:email-api:email-mcp" }),
     transparency: loadOrCreateEd25519Signer({ keyFile: join(keyDir, "transparency.key.json"), keyId: "transparency:email-mcp" })
   };
@@ -948,8 +959,20 @@ function loadRecipientVerifierKey(config) {
   return loadOrCreateEd25519Signer({ keyFile: join(keyDir, "recipient-verifier.key.json"), keyId: "recipient-verifier:email-mcp" });
 }
 
-async function createWitnessClients(specs, keyring) {
-  const witnesses = specs.map((spec) => new HttpWitnessClient(spec));
+async function createWitnessClients(specs, keyring, config, gatewaySigner) {
+  const witnesses = specs.map((spec) => new HttpWitnessClient({
+    ...spec,
+    signedRequests: config.witness.signedRequests.enabled ? {
+      enabled: true,
+      gatewayId: config.gateway.id,
+      gatewayKeyId: gatewaySigner.keyId,
+      gatewaySigner,
+      witnessId: spec.witnessId ?? spec.id,
+      witnessEpochId: spec.witnessEpochId ?? config.witness.signedRequests.witnessEpochId,
+      registryEpochId: spec.registryEpochId ?? config.witness.signedRequests.registryEpochId,
+      workflowId: spec.workflowId ?? config.witness.signedRequests.workflowId
+    } : null
+  }));
   for (const witness of witnesses) {
     const publicKey = await witness.publicKey();
     keyring[publicKey.key_id] = publicKey.public_key_pem;
@@ -1123,7 +1146,7 @@ function createSignedEmailAdmissionManifest({ config, requestContext, policyBund
       approvedDataSources: [],
       approvedModels: [],
       witnessSetId: "witness-set.email-mcp.l1+l2",
-      witnessThreshold: 2
+      witnessThreshold: config.witness.threshold
     }),
     tenant_id: tenantId,
     operator_id: config.operator.id,

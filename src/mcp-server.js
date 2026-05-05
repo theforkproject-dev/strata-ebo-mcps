@@ -84,7 +84,7 @@ export class EmailMcpServer {
           action_id: run.tool_output?.action_id || null,
           action_id_semantics: "pre-send IntentGrant grant_id authorizing this exact email send",
           payload_digest: run.commitment.payload_digest,
-          witness_quorum: "2-of-3",
+          witness_quorum: run.mechanical_witness_quorum || "2-of-3",
           verification_tiers: ["level-1-mechanical", "level-2-policy"],
           policy_quorum: run.policy_quorum,
           policy_bundle: run.policy_bundle,

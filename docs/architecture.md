@@ -18,6 +18,14 @@ The server combines two existing patterns:
 9. The gateway appends a witnessed observation and session end receipt.
 10. The server writes a checkpoint, verifies the resulting chain, and returns MCP structured content with provider metadata and certificate refs.
 
+## Tinfoil L1 Witness Variant
+
+The `npm run demo:tinfoil-witness` path keeps the MCP gateway and L2 policy witnesses local, but replaces the three local L1 mechanical witnesses with the live Tinfoil witness `strata-witness-poc-1.amotivv.containers.tinfoil.dev`.
+
+This variant uses gateway-signed `turnstile.witness-sign-request.v1` requests and receives S3 Object Lock guard evidence on the L1 witness signatures. The local gateway uses the gateway key bundle authorized during the Tinfoil witness bootstrap.
+
+Current compatibility note: the live witness runtime still has `WITNESS_EXPECTED_WORKFLOW_ID=demo.payment`; the witness registry also authorizes `email.send`. Until the witness is relaunched with registry-only or multi-workflow runtime enforcement, the local Tinfoil L1 email demo sets the witness request workflow to `demo.payment` while the email certificate and email registry remain scoped to `email.send`.
+
 ## L2 Policy Witnesses
 
 The functional L2 demo uses three policy witness HTTP services. Each exposes `/health`, `/v1/public-key`, `/v1/policy`, and `/v1/evaluate`.
