@@ -150,12 +150,9 @@ function startServer(l1WitnessUrls, policyWitnessUrls, registryUrl) {
     WITNESS_THRESHOLD: "1",
     GATEWAY_SIGNED_WITNESS_REQUESTS_ENABLED: "true",
     GATEWAY_KEY_BUNDLE_FILE: gatewayKeyBundleFile,
-    WITNESS_EPOCH_ID: process.env.WITNESS_EPOCH_ID || "wit_epoch_tinfoil_poc_001",
-    REGISTRY_EPOCH_ID: process.env.REGISTRY_EPOCH_ID || "registry_epoch_tinfoil_poc_001",
-    // Current witness deployment has a runtime workflow allowlist set to demo.payment.
-    // The registry already authorizes email.send; relaunching the witness with a registry-only
-    // workflow check can switch this default to email.send.
-    WITNESS_WORKFLOW_ID: process.env.WITNESS_WORKFLOW_ID || "demo.payment",
+    WITNESS_EPOCH_ID: process.env.WITNESS_EPOCH_ID || "wit_epoch_tinfoil_poc_002",
+    REGISTRY_EPOCH_ID: process.env.REGISTRY_EPOCH_ID || "registry_epoch_tinfoil_poc_002",
+    WITNESS_WORKFLOW_ID: process.env.WITNESS_WORKFLOW_ID || "email.send",
     POLICY_WITNESS_URLS: policyWitnessUrls,
     POLICY_WITNESS_THRESHOLD: "2",
     REGISTRY_URL: registryUrl,

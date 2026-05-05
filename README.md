@@ -58,7 +58,7 @@ It requires the gateway key bundle from the Tinfoil witness bootstrap:
 ../strata-ebo-turnstile/artifacts/tinfoil-witness-poc/gateway-registry-keys.json
 ```
 
-The current live witness runtime still has a compatibility workflow allowlist of `demo.payment`; the witness registry also authorizes `email.send`. After the witness is relaunched with registry-only workflow enforcement, set `WITNESS_WORKFLOW_ID=email.send` for this demo.
+The live witness runs registry-scoped workflow enforcement, so this demo signs witness requests with `WITNESS_WORKFLOW_ID=email.send` by default.
 
 ## Real Resend Send
 

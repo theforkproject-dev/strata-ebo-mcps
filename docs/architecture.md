@@ -24,7 +24,7 @@ The `npm run demo:tinfoil-witness` path keeps the MCP gateway and L2 policy witn
 
 This variant uses gateway-signed `turnstile.witness-sign-request.v1` requests and receives S3 Object Lock guard evidence on the L1 witness signatures. The local gateway uses the gateway key bundle authorized during the Tinfoil witness bootstrap.
 
-Current compatibility note: the live witness runtime still has `WITNESS_EXPECTED_WORKFLOW_ID=demo.payment`; the witness registry also authorizes `email.send`. Until the witness is relaunched with registry-only or multi-workflow runtime enforcement, the local Tinfoil L1 email demo sets the witness request workflow to `demo.payment` while the email certificate and email registry remain scoped to `email.send`.
+The live witness runs registry-scoped workflow enforcement. The local Tinfoil L1 email demo signs witness requests with workflow `email.send`, and the witness accepts them because the signed witness registry epoch authorizes both the gateway key and witness key for that workflow.
 
 ## L2 Policy Witnesses
 
