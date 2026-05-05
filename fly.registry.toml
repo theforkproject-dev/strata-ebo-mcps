@@ -14,7 +14,7 @@ primary_region = "iad"
   OPERATOR_ID = "operator:amotivv-demo"
   OPERATOR_ADMISSION_KEY_ID = "operator-admission:amotivv-demo"
   OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64 = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUNvd0JRWURLMlZ3QXlFQVpLaW5La3lIcDFBemR6NExSQ05QaG13L1BPVTdqVmgzcS83OGU5THhKbHc9Ci0tLS0tRU5EIFBVQkxJQyBLRVktLS0tLQo="
-  WITNESS_URLS = "w1=https://strata-email-witness-1.fly.dev,w2=https://strata-email-witness-2.fly.dev,w3=https://strata-email-witness-3.fly.dev"
+  WITNESS_URLS = "w1=https://strata-email-witness-1.fly.dev,w2=https://strata-email-witness-2.fly.dev,w3=https://strata-email-witness-3.fly.dev,strata-witness-poc-1=https://strata-witness-poc-1.amotivv.containers.tinfoil.dev"
   POLICY_WITNESS_URLS = "p1=https://strata-email-policy-witness-1.fly.dev,p2=https://strata-email-policy-witness-2.fly.dev,p3=https://strata-email-policy-witness-3.fly.dev"
 
 [[mounts]]

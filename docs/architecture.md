@@ -26,6 +26,15 @@ This variant uses gateway-signed `turnstile.witness-sign-request.v1` requests an
 
 The live witness runs registry-scoped workflow enforcement. The local Tinfoil L1 email demo signs witness requests with workflow `email.send`, and the witness accepts them because the signed witness registry epoch authorizes both the gateway key and witness key for that workflow.
 
+The Tinfoil MCP gateway deployment moves the MCP gateway itself into Tinfoil while continuing to use the live Tinfoil L1 witness, Fly-hosted L2 policy witnesses, and Fly-hosted registry plane:
+
+- Gateway: `https://strata-email-mcp-gateway.amotivv.containers.tinfoil.dev/mcp`
+- Gateway config repo: `theforkproject-dev/strata-email-mcp-gateway`
+- L1 witness: `https://strata-witness-poc-1.amotivv.containers.tinfoil.dev`
+- Registry/policy plane: `https://strata-email-registry.fly.dev`
+
+The first Tinfoil gateway deployment uses `EMAIL_PROVIDER=dry-run`. It proves the MCP, gateway attestation, signed witness request, L1 S3 guard evidence, L2 policy quorum, operator registry, and certificate bundle path without sending real email.
+
 ## L2 Policy Witnesses
 
 The functional L2 demo uses three policy witness HTTP services. Each exposes `/health`, `/v1/public-key`, `/v1/policy`, and `/v1/evaluate`.

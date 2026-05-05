@@ -60,6 +60,24 @@ It requires the gateway key bundle from the Tinfoil witness bootstrap:
 
 The live witness runs registry-scoped workflow enforcement, so this demo signs witness requests with `WITNESS_WORKFLOW_ID=email.send` by default.
 
+## Live Tinfoil MCP Gateway
+
+The email MCP gateway is also deployed as a Tinfoil container in dry-run email mode:
+
+```text
+https://strata-email-mcp-gateway.amotivv.containers.tinfoil.dev/mcp
+```
+
+Config repo:
+
+```text
+theforkproject-dev/strata-email-mcp-gateway
+```
+
+The live gateway exposes Claude-compatible MCP tools, calls the live Tinfoil L1 witness with signed witness requests, uses the Fly-hosted L2 policy witnesses and registry, and returns verifier-ready certificate bundles from `/certificates/:id/bundle`.
+
+The active Fly registry authorizes both the original Fly L1 witnesses and the official Tinfoil L1 witness so certificates from this gateway verify under the same registry plane.
+
 ## Real Resend Send
 
 Create `.env` from `.env.example`, set:
