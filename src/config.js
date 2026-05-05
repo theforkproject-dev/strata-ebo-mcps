@@ -146,6 +146,8 @@ function parseL1TinfoilEvidence(env) {
     configTag: env.L1_TINFOIL_CONFIG_TAG || "",
     imageDigest: env.L1_TINFOIL_IMAGE_DIGEST || "",
     attestationDigest: env.L1_TINFOIL_ATTESTATION_DIGEST || "",
+    attestationUrl: env.L1_TINFOIL_ATTESTATION_URL || "",
+    attestationRequired: truthy(env.L1_TINFOIL_ATTESTATION_REQUIRED),
     attestationRef: env.L1_TINFOIL_ATTESTATION_REF || "",
     sigstoreBundleRef: env.L1_TINFOIL_SIGSTORE_BUNDLE_REF || ""
   });
