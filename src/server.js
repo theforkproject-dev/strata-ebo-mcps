@@ -95,7 +95,7 @@ async function handleMcp(request, response) {
   }
 
   const contentType = request.headers["content-type"] || "";
-  if (!contentType.startsWith("application/json")) {
+  if (contentType && !contentType.startsWith("application/json") && !contentType.startsWith("text/plain")) {
     return json(response, 415, { error: "Content-Type must be application/json" });
   }
 
