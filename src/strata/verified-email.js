@@ -429,6 +429,8 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     commitment: publicCommitment,
     admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
+    authority_pins: authorityPins(config, registryBinding, policyBundle),
+    tinfoil_attestation: certificateTinfoilEvidence(config),
     policy: {
       tier: "level-2-policy",
       decision: policyQuorum.decision,
@@ -624,6 +626,8 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     commitment: publicCommitment,
     admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
+    authority_pins: authorityPins(config, registryBinding, policyBundle),
+    tinfoil_attestation: certificateTinfoilEvidence(config),
     policy: {
       tier: "level-2-policy",
       decision: policyQuorum.decision,
@@ -1061,12 +1065,14 @@ async function loadAndWriteRegistryBinding(config, registryEpochPath) {
   if (!config.registry?.url) {
     return null;
   }
-  const binding = await fetchRegistryBinding(config.registry.url);
+  const binding = await fetchRegistryBinding(config.registry.url, registryPinOptions(config));
   writeJson(registryEpochPath, {
     registry_epoch: binding.epoch,
     registry_epoch_digest: binding.epoch_digest,
     registry_epoch_url: binding.epoch_url,
     registry_trust_anchor: binding.trust_anchor,
+    fetched_registry_trust_anchor: binding.fetched_trust_anchor,
+    pinned: binding.pinned,
     verification: binding.verification
   });
   return binding;
@@ -1076,7 +1082,7 @@ async function loadAndWriteOperatorRegistryBinding(config, operatorRegistryPath,
   if (!config.registry?.url || !admissionManifest?.operator_signature?.operator_id) {
     return null;
   }
-  const binding = await fetchOperatorRegistryBinding(config.registry.url, admissionManifest.operator_signature.operator_id);
+  const binding = await fetchOperatorRegistryBinding(config.registry.url, admissionManifest.operator_signature.operator_id, registryPinOptions(config));
   writeJson(operatorRegistryPath, binding);
   return binding;
 }
@@ -1091,8 +1097,47 @@ function registryCertificateBinding(registryBinding) {
     registry_epoch_url: registryBinding.epoch_url,
     registry_authority_key_id: registryBinding.trust_anchor.key_id,
     policy_bundle_digest: registryBinding.epoch.policy_bundle_digest,
-    policy_bundle_url: registryBinding.epoch.policy_bundle_url || null
+    policy_bundle_url: registryBinding.epoch.policy_bundle_url || null,
+    pinned: registryBinding.pinned || null
   };
+}
+
+function registryPinOptions(config) {
+  return {
+    expectedEpochDigest: config.registry?.expectedEpochDigest || "",
+    trustAnchorKeyId: config.registry?.trustAnchorKeyId || "",
+    trustAnchorPublicKeyPem: config.registry?.trustAnchorPublicKeyPem || ""
+  };
+}
+
+function authorityPins(config, registryBinding, policyBundle) {
+  const policyDigest = policyBundle ? policyBundleDigest(policyBundle) : null;
+  return {
+    registry_epoch: {
+      expected_digest: config.registry?.expectedEpochDigest || null,
+      actual_digest: registryBinding?.epoch_digest || null,
+      pinned: Boolean(config.registry?.expectedEpochDigest),
+      matched: config.registry?.expectedEpochDigest ? config.registry.expectedEpochDigest === registryBinding?.epoch_digest : null
+    },
+    registry_trust_anchor: {
+      expected_key_id: config.registry?.trustAnchorKeyId || null,
+      actual_key_id: registryBinding?.trust_anchor?.key_id || null,
+      pinned: Boolean(config.registry?.trustAnchorKeyId && config.registry?.trustAnchorPublicKeyPem),
+      matched: config.registry?.trustAnchorKeyId ? config.registry.trustAnchorKeyId === registryBinding?.trust_anchor?.key_id : null
+    },
+    policy_bundle: {
+      expected_digest: config.policy?.expectedDigest || null,
+      actual_digest: policyDigest,
+      pinned: Boolean(config.policy?.expectedDigest),
+      matched: config.policy?.expectedDigest ? config.policy.expectedDigest === policyDigest : null
+    }
+  };
+}
+
+function assertExpectedDigest(label, actual, expected) {
+  if (expected && actual !== expected) {
+    throw new Error(`${label} digest mismatch: expected=${expected} actual=${actual}`);
+  }
 }
 
 function verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) {
@@ -1139,9 +1184,9 @@ function createSignedEmailAdmissionManifest({ config, requestContext, policyBund
       manifestId: `adm_email_mcp_${tenantId}_v1`,
       governanceId: "gov_email_mcp_v1",
       policyHash,
-      agent: tinfoilEvidence("mcp-agent", ["mcp://tools/*"], null),
-      gateway: tinfoilEvidence("email-gateway", ["strata://verified-actions/email.send"], egressPolicy),
-      verifier: tinfoilEvidence("email-verifier", ["verify://local/email"], null),
+      agent: tinfoilEvidence(null, "mcp-agent", ["mcp://tools/*"], null),
+      gateway: tinfoilEvidence(config.attestation?.gateway, "email-gateway", ["strata://verified-actions/email.send"], egressPolicy),
+      verifier: tinfoilEvidence(null, "email-verifier", ["verify://local/email"], null),
       approvedTools: [{ tool_id: "email-api", audience: "email-api", methods: ["POST /v1/send-email"] }],
       approvedDataSources: [],
       approvedModels: [],
@@ -1176,10 +1221,12 @@ function admissionAuthContext(requestContext, tenantId) {
 }
 
 async function loadConfiguredPolicyBundle(config) {
-  return loadEmailPolicyBundle({
+  const policyBundle = await loadEmailPolicyBundle({
     file: config.policy?.bundleFile,
     url: config.policy?.bundleUrl || ""
   });
+  assertExpectedDigest("policy bundle", policyBundleDigest(policyBundle), config.policy?.expectedDigest);
+  return policyBundle;
 }
 
 function configuredPolicyUrl(config, policyBundle) {
@@ -1248,7 +1295,7 @@ async function safeRegistryStatus(config) {
     return { configured: false };
   }
   try {
-    const binding = await fetchRegistryBinding(config.registry.url);
+    const binding = await fetchRegistryBinding(config.registry.url, registryPinOptions(config));
     return {
       configured: true,
       ok: binding.verification.ok,
@@ -1258,6 +1305,7 @@ async function safeRegistryStatus(config) {
       registry_authority_key_id: binding.trust_anchor.key_id,
       policy_bundle_digest: binding.epoch.policy_bundle_digest,
       policy_bundle_url: binding.epoch.policy_bundle_url || null,
+      pinned: binding.pinned,
       errors: binding.verification.errors
     };
   } catch (error) {
@@ -1285,16 +1333,56 @@ function createEgressPolicy(config) {
   };
 }
 
-function tinfoilEvidence(containerName, shimPaths, egressPolicy) {
+function certificateTinfoilEvidence(config) {
+  const gateway = measuredRuntimeSummary(config.attestation?.gateway);
+  const l1Witnesses = (config.attestation?.l1Witnesses || []).map(measuredRuntimeSummary).filter(Boolean);
+  if (!gateway && l1Witnesses.length === 0) {
+    return null;
+  }
+  return {
+    version: "strata.tinfoil_attestation_binding.v1",
+    gateway,
+    l1_witnesses: l1Witnesses,
+    note: "These are verifier-facing bindings to Tinfoil measurement evidence for the runtimes used by this certificate. Verifiers should independently verify the referenced Tinfoil attestation against the public config repos and tags."
+  };
+}
+
+function measuredRuntimeSummary(evidence) {
+  if (!evidence || (!evidence.attestationDigest && !evidence.configRepo && !evidence.configTag)) {
+    return null;
+  }
+  return {
+    platform: "tinfoil-containers",
+    witness_id: evidence.witnessId || null,
+    container_name: evidence.containerName || null,
+    config_repo: evidence.configRepo || null,
+    config_tag: evidence.configTag || null,
+    image_digest: evidence.imageDigest || null,
+    attestation_digest: evidence.attestationDigest || null,
+    attestation_ref: evidence.attestationRef || tinfoilReleaseRef(evidence),
+    sigstore_bundle_ref: evidence.sigstoreBundleRef || tinfoilReleaseRef(evidence),
+    debug_mode: false
+  };
+}
+
+function tinfoilEvidence(evidence, containerName, shimPaths, egressPolicy) {
+  const measured = measuredRuntimeSummary(evidence);
   return createTinfoilEvidence({
-    containerName,
-    imageDigest: `sha256:${sha256Hex(`email-mcp:${containerName}`)}`,
-    configHash: sha256Hex(`email-mcp-config:${containerName}`),
-    attestationRef: `demo://email-mcp/${containerName}/attestation-placeholder`,
-    sigstoreBundleRef: `sigstore://email-mcp/${containerName}`,
+    containerName: measured?.container_name || containerName,
+    imageDigest: measured?.image_digest || `sha256:${sha256Hex(`email-mcp:${containerName}`)}`,
+    configHash: measured?.attestation_digest || sha256Hex(`email-mcp-config:${containerName}`),
+    attestationRef: measured?.attestation_ref || `demo://email-mcp/${containerName}/attestation-placeholder`,
+    sigstoreBundleRef: measured?.sigstore_bundle_ref || `sigstore://email-mcp/${containerName}`,
     shimPaths,
     egressPolicy
   });
+}
+
+function tinfoilReleaseRef(evidence) {
+  if (!evidence?.configRepo || !evidence?.configTag) {
+    return null;
+  }
+  return `https://github.com/${evidence.configRepo}/releases/tag/${evidence.configTag}`;
 }
 
 function resolveCertificatePath(ref, config) {

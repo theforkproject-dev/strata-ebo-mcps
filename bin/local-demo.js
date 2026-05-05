@@ -2,7 +2,8 @@
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { loadOrCreateEd25519Signer } from "../src/strata/primitives.js";
+import { loadOrCreateEd25519Signer, witnessRegistryEpochDigest } from "../src/strata/primitives.js";
+import { policyBundleDigest } from "../src/policy/email-policy.js";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 const strataRoot = resolve(root, "vendor/strata-ebo-turnstile");
@@ -23,7 +24,8 @@ try {
   const witnessUrls = await startWitnesses();
   const policyWitnessUrls = await startPolicyWitnesses();
   const registryUrl = await startRegistry(witnessUrls, policyWitnessUrls);
-  const server = startServer(witnessUrls, policyWitnessUrls, registryUrl);
+  const authorityPins = await fetchAuthorityPins(registryUrl);
+  const server = startServer(witnessUrls, policyWitnessUrls, registryUrl, authorityPins);
   children.push(server);
   await waitForHealth(`http://${host}:${port}/health`);
   const registryPolicyPointer = await fetch(`${registryUrl}/policies/current`).then((response) => response.json());
@@ -175,7 +177,7 @@ async function startRegistry(witnessUrls, policyWitnessUrls) {
   return info.url;
 }
 
-function startServer(witnessUrls, policyWitnessUrls, registryUrl) {
+function startServer(witnessUrls, policyWitnessUrls, registryUrl, authorityPins) {
   const env = {
     ...process.env,
     HOST: host,
@@ -188,6 +190,10 @@ function startServer(witnessUrls, policyWitnessUrls, registryUrl) {
     WITNESS_URLS: witnessUrls,
     POLICY_WITNESS_URLS: policyWitnessUrls,
     REGISTRY_URL: registryUrl,
+    REGISTRY_EPOCH_DIGEST: authorityPins.registryEpochDigest,
+    REGISTRY_TRUST_ANCHOR_KEY_ID: authorityPins.registryTrustAnchor.key_id,
+    REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM: authorityPins.registryTrustAnchor.public_key_pem,
+    POLICY_BUNDLE_DIGEST: authorityPins.policyBundleDigest,
     TENANT_ID: "default",
     OPERATOR_ID: "operator:amotivv-demo",
     OPERATOR_ADMISSION_KEY_ID: operatorAdmissionKeyId,
@@ -202,6 +208,20 @@ function startServer(witnessUrls, policyWitnessUrls, registryUrl) {
   child.stdout.on("data", (chunk) => process.stderr.write(chunk));
   child.stderr.on("data", (chunk) => process.stderr.write(chunk));
   return child;
+}
+
+async function fetchAuthorityPins(registryUrl) {
+  const [registryEpoch, registryTrustAnchor, policyPointer] = await Promise.all([
+    fetch(`${registryUrl}/registry/current`).then((response) => response.json()),
+    fetch(`${registryUrl}/registry/public-key`).then((response) => response.json()),
+    fetch(`${registryUrl}/policies/current`).then((response) => response.json())
+  ]);
+  const policyBundle = await fetch(`${registryUrl}/policies/epochs/${policyPointer.active_policy.policy_epoch_id}`).then((response) => response.json());
+  return {
+    registryEpochDigest: witnessRegistryEpochDigest(registryEpoch),
+    registryTrustAnchor,
+    policyBundleDigest: policyBundleDigest(policyBundle)
+  };
 }
 
 function createMcpClient(url) {

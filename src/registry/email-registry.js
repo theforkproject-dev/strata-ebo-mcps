@@ -164,7 +164,7 @@ export function verifyOperatorRegistryRecord(record, trustAnchors = {}) {
   };
 }
 
-export async function fetchRegistryBinding(registryUrl, fetchImpl = fetch) {
+export async function fetchRegistryBinding(registryUrl, options = {}, fetchImpl = fetch) {
   if (!registryUrl) {
     return null;
   }
@@ -181,17 +181,26 @@ export async function fetchRegistryBinding(registryUrl, fetchImpl = fetch) {
   if (!publicKeyResponse.ok) {
     throw new Error(trustAnchor.error || `registry public key returned ${publicKeyResponse.status}`);
   }
-  const verification = verifyWitnessRegistryEpoch(epoch, { [trustAnchor.key_id]: trustAnchor.public_key_pem });
+  const trustedAnchor = pinnedTrustAnchor(options) || trustAnchor;
+  verifyFetchedTrustAnchor(trustAnchor, trustedAnchor);
+  const verification = verifyWitnessRegistryEpoch(epoch, { [trustedAnchor.key_id]: trustedAnchor.public_key_pem });
+  const epochDigest = witnessRegistryEpochDigest(epoch);
+  verifyExpectedDigest("registry epoch", epochDigest, options.expectedEpochDigest);
   return {
     epoch,
-    epoch_digest: witnessRegistryEpochDigest(epoch),
+    epoch_digest: epochDigest,
     epoch_url: `${base}/registry/epochs/${epoch.epoch_id}`,
-    trust_anchor: trustAnchor,
-    verification
+    trust_anchor: trustedAnchor,
+    fetched_trust_anchor: trustAnchor,
+    verification,
+    pinned: {
+      registry_epoch_digest: Boolean(options.expectedEpochDigest),
+      registry_trust_anchor: Boolean(pinnedTrustAnchor(options))
+    }
   };
 }
 
-export async function fetchOperatorRegistryBinding(registryUrl, operatorId, fetchImpl = fetch) {
+export async function fetchOperatorRegistryBinding(registryUrl, operatorId, options = {}, fetchImpl = fetch) {
   if (!registryUrl || !operatorId) {
     return null;
   }
@@ -208,14 +217,48 @@ export async function fetchOperatorRegistryBinding(registryUrl, operatorId, fetc
   if (!publicKeyResponse.ok) {
     throw new Error(trustAnchor.error || `registry public key returned ${publicKeyResponse.status}`);
   }
-  const verification = verifyOperatorRegistryRecord(record, { [trustAnchor.key_id]: trustAnchor.public_key_pem });
+  const trustedAnchor = pinnedTrustAnchor(options) || trustAnchor;
+  verifyFetchedTrustAnchor(trustAnchor, trustedAnchor);
+  const verification = verifyOperatorRegistryRecord(record, { [trustedAnchor.key_id]: trustedAnchor.public_key_pem });
   return {
     operator_record: record,
     operator_record_digest: digestValue(record),
     operator_record_url: `${base}/operators/${encodeURIComponent(record.operator_id)}`,
-    registry_trust_anchor: trustAnchor,
-    verification
+    registry_trust_anchor: trustedAnchor,
+    fetched_registry_trust_anchor: trustAnchor,
+    verification,
+    pinned: {
+      registry_trust_anchor: Boolean(pinnedTrustAnchor(options))
+    }
   };
+}
+
+function pinnedTrustAnchor(options) {
+  if (!options?.trustAnchorKeyId && !options?.trustAnchorPublicKeyPem) {
+    return null;
+  }
+  if (!options.trustAnchorKeyId || !options.trustAnchorPublicKeyPem) {
+    throw new Error("registry trust anchor pin requires both key id and public key PEM");
+  }
+  return {
+    key_id: options.trustAnchorKeyId,
+    public_key_pem: options.trustAnchorPublicKeyPem
+  };
+}
+
+function verifyFetchedTrustAnchor(fetched, trusted) {
+  if (!fetched || !trusted) {
+    return;
+  }
+  if (fetched.key_id !== trusted.key_id || fetched.public_key_pem !== trusted.public_key_pem) {
+    throw new Error("registry trust anchor response does not match pinned trust anchor");
+  }
+}
+
+function verifyExpectedDigest(label, actual, expected) {
+  if (expected && actual !== expected) {
+    throw new Error(`${label} digest mismatch: expected=${expected} actual=${actual}`);
+  }
 }
 
 async function witnessEntry({ witness, tier, policyHash, fetchImpl }) {

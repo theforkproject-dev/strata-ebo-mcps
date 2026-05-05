@@ -8,6 +8,8 @@ export function loadConfig(env = process.env) {
   const dataDir = env.DATA_DIR || "artifacts/email-mcp";
   const publicBaseUrl = trimSlash(env.PUBLIC_BASE_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8899"}`);
   const registryUrl = trimSlash(env.REGISTRY_URL || "");
+  const registryTrustAnchorPublicKeyPem = env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM
+    || (env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM_BASE64 ? Buffer.from(env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM_BASE64, "base64").toString("utf8") : "");
   const policyBundleEpochId = env.POLICY_BUNDLE_EPOCH_ID || "email-policy-epoch-001";
   const operatorAdmissionPublicKeyPem = env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM
     || (env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64 ? Buffer.from(env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64, "base64").toString("utf8") : "");
@@ -41,12 +43,16 @@ export function loadConfig(env = process.env) {
       codeTtlMs: Number(env.OAUTH_CODE_TTL_SECONDS || 600) * 1000
     },
     registry: {
-      url: registryUrl
+      url: registryUrl,
+      expectedEpochDigest: env.REGISTRY_EPOCH_DIGEST || "",
+      trustAnchorKeyId: env.REGISTRY_TRUST_ANCHOR_KEY_ID || "",
+      trustAnchorPublicKeyPem: registryTrustAnchorPublicKeyPem
     },
     policy: {
       bundleFile: env.POLICY_BUNDLE_FILE || "policies/email-policy-epoch-001.json",
       bundleUrl: trimSlash(env.POLICY_BUNDLE_URL || (registryUrl ? `${registryUrl}/policies/epochs/${policyBundleEpochId}` : "")),
-      epochId: policyBundleEpochId
+      epochId: policyBundleEpochId,
+      expectedDigest: env.POLICY_BUNDLE_DIGEST || ""
     },
     tenant: {
       id: env.TENANT_ID || "default"
@@ -81,6 +87,18 @@ export function loadConfig(env = process.env) {
     policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p"),
     policyWitness: {
       threshold: positiveInt(env.POLICY_WITNESS_THRESHOLD || env.L2_POLICY_WITNESS_THRESHOLD || 2, "POLICY_WITNESS_THRESHOLD")
+    },
+    attestation: {
+      gateway: {
+        containerName: env.GATEWAY_TINFOIL_CONTAINER_NAME || "",
+        configRepo: env.GATEWAY_TINFOIL_CONFIG_REPO || "",
+        configTag: env.GATEWAY_TINFOIL_CONFIG_TAG || "",
+        imageDigest: normalizeImageDigest(env.GATEWAY_TINFOIL_IMAGE_DIGEST || ""),
+        attestationDigest: env.GATEWAY_TINFOIL_ATTESTATION_DIGEST || "",
+        attestationRef: env.GATEWAY_TINFOIL_ATTESTATION_REF || "",
+        sigstoreBundleRef: env.GATEWAY_TINFOIL_SIGSTORE_BUNDLE_REF || ""
+      },
+      l1Witnesses: parseL1TinfoilEvidence(env)
     }
   };
 }
@@ -105,6 +123,44 @@ function trimSlash(value) {
 
 function truthy(value) {
   return ["1", "true", "yes", "on"].includes(String(value || "").toLowerCase());
+}
+
+function normalizeImageDigest(value) {
+  if (!value) {
+    return "";
+  }
+  return value.startsWith("sha256:") ? value : `sha256:${value}`;
+}
+
+function parseL1TinfoilEvidence(env) {
+  if (env.L1_TINFOIL_EVIDENCE_JSON) {
+    const parsed = JSON.parse(env.L1_TINFOIL_EVIDENCE_JSON);
+    return (Array.isArray(parsed) ? parsed : [parsed]).map(normalizeL1Evidence).filter((item) => item.witnessId);
+  }
+  const item = normalizeL1Evidence({
+    witnessId: env.L1_TINFOIL_WITNESS_ID || "",
+    containerName: env.L1_TINFOIL_CONTAINER_NAME || "",
+    configRepo: env.L1_TINFOIL_CONFIG_REPO || "",
+    configTag: env.L1_TINFOIL_CONFIG_TAG || "",
+    imageDigest: env.L1_TINFOIL_IMAGE_DIGEST || "",
+    attestationDigest: env.L1_TINFOIL_ATTESTATION_DIGEST || "",
+    attestationRef: env.L1_TINFOIL_ATTESTATION_REF || "",
+    sigstoreBundleRef: env.L1_TINFOIL_SIGSTORE_BUNDLE_REF || ""
+  });
+  return item.witnessId ? [item] : [];
+}
+
+function normalizeL1Evidence(item) {
+  return {
+    witnessId: item.witnessId || item.witness_id || "",
+    containerName: item.containerName || item.container_name || "",
+    configRepo: item.configRepo || item.config_repo || "",
+    configTag: item.configTag || item.config_tag || "",
+    imageDigest: normalizeImageDigest(item.imageDigest || item.image_digest || ""),
+    attestationDigest: item.attestationDigest || item.attestation_digest || "",
+    attestationRef: item.attestationRef || item.attestation_ref || "",
+    sigstoreBundleRef: item.sigstoreBundleRef || item.sigstore_bundle_ref || ""
+  };
 }
 
 function positiveInt(value, label) {
