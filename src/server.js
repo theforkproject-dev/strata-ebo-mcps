@@ -26,12 +26,13 @@ const server = createServer(async (request, response) => {
         name: "strata-email-mcp",
         email_provider: config.email.provider,
         witness_count: config.witnesses.length,
-        oauth_enabled: Boolean(oauthServer)
+        oauth_enabled: Boolean(oauthServer),
+        oauth_store_backend: oauthServer ? config.oauth.storeBackend : "disabled"
       });
     }
 
     if (oauthServer?.canHandle(request)) {
-      return oauthServer.handle(request, response);
+      return await oauthServer.handle(request, response);
     }
 
     if (request.method === "GET" && request.url?.startsWith("/certificates/")) {
@@ -39,7 +40,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.url === "/mcp") {
-      return handleMcp(request, response);
+      return await handleMcp(request, response);
     }
 
     return json(response, 404, { error: "not found" });
@@ -55,7 +56,8 @@ server.listen(config.port, config.host, () => {
     mcp_url: `http://${config.host}:${config.port}/mcp`,
     email_provider: config.email.provider,
     witness_count: config.witnesses.length,
-    oauth_enabled: Boolean(oauthServer)
+    oauth_enabled: Boolean(oauthServer),
+    oauth_store_backend: oauthServer ? config.oauth.storeBackend : "disabled"
   }, null, 2));
 });
 
@@ -83,7 +85,7 @@ async function handleMcp(request, response) {
     return json(response, 405, { error: "method not allowed" });
   }
 
-  const auth = authenticate(request);
+  const auth = await authenticate(request);
   if (!auth.ok) {
     const authenticate = oauthServer
       ? `Bearer resource_metadata="${config.oauth.issuer}/.well-known/oauth-protected-resource", scope="mcp:read mcp:write"`
@@ -147,7 +149,7 @@ async function handleSingle(request, session) {
   }
 }
 
-function authenticate(request) {
+async function authenticate(request) {
   const sessionId = request.headers["mcp-session-id"];
   const session = sessions.validateSession(sessionId);
   if (session) {
@@ -156,7 +158,7 @@ function authenticate(request) {
   if (!config.bearerToken) {
     if (oauthServer) {
       const token = bearerToken(request);
-      const accessToken = token ? oauthServer.validateAccessToken(token) : null;
+      const accessToken = token ? await oauthServer.validateAccessToken(token) : null;
       if (accessToken) {
         return { ok: true, session: oauthSession(accessToken) };
       }
@@ -169,7 +171,7 @@ function authenticate(request) {
     return { ok: true, session: null };
   }
   if (oauthServer) {
-    const accessToken = token ? oauthServer.validateAccessToken(token) : null;
+    const accessToken = token ? await oauthServer.validateAccessToken(token) : null;
     if (accessToken) {
       return { ok: true, session: oauthSession(accessToken) };
     }

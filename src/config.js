@@ -11,6 +11,7 @@ export function loadConfig(env = process.env) {
   const registryTrustAnchorPublicKeyPem = env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM
     || (env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM_BASE64 ? Buffer.from(env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM_BASE64, "base64").toString("utf8") : "");
   const policyBundleEpochId = env.POLICY_BUNDLE_EPOCH_ID || "email-policy-epoch-001";
+  const oauthStoreBackend = String(env.OAUTH_STORE_BACKEND || (env.OAUTH_DYNAMODB_TABLE || env.OAUTH_DYNAMODB_TABLE_NAME ? "dynamodb" : "file")).toLowerCase();
   const operatorAdmissionPublicKeyPem = env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM
     || (env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64 ? Buffer.from(env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64, "base64").toString("utf8") : "");
   const gatewayKeyBundle = readOptionalJson(env.GATEWAY_KEY_BUNDLE_FILE || env.TINFOIL_WITNESS_POC_GATEWAY_KEY_FILE || "");
@@ -46,11 +47,19 @@ export function loadConfig(env = process.env) {
     oauth: {
       enabled: Boolean(env.OAUTH_ISSUER),
       issuer: trimSlash(env.OAUTH_ISSUER || publicBaseUrl),
+      storeBackend: oauthStoreBackend,
       storePath: env.OAUTH_STORE_PATH || `${dataDir}/oauth-store.json`,
+      dynamoDb: {
+        tableName: env.OAUTH_DYNAMODB_TABLE || env.OAUTH_DYNAMODB_TABLE_NAME || "",
+        awsRegion: env.OAUTH_DYNAMODB_AWS_REGION || env.AWS_REGION || "",
+        awsAccessKeyId: env.OAUTH_DYNAMODB_AWS_ACCESS_KEY_ID || "",
+        awsSecretAccessKey: env.OAUTH_DYNAMODB_AWS_SECRET_ACCESS_KEY || "",
+        ttlAttribute: env.OAUTH_DYNAMODB_TTL_ATTRIBUTE || "ttl"
+      },
       consentPassword: env.OAUTH_CONSENT_PASSWORD || "",
       consentPasswordHash: env.OAUTH_CONSENT_PASSWORD_SHA256 || "",
       accessTokenTtlMs: Number(env.OAUTH_ACCESS_TOKEN_TTL_SECONDS || 3600) * 1000,
-      refreshTokenTtlMs: Number(env.OAUTH_REFRESH_TOKEN_TTL_SECONDS || 30 * 24 * 3600) * 1000,
+      refreshTokenTtlMs: Number(env.OAUTH_REFRESH_TOKEN_TTL_SECONDS || 7 * 24 * 3600) * 1000,
       codeTtlMs: Number(env.OAUTH_CODE_TTL_SECONDS || 600) * 1000
     },
     registry: {

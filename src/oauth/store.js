@@ -1,6 +1,8 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 
 export class OAuthMemoryStore {
   constructor(clock = () => new Date()) {
@@ -159,8 +161,186 @@ export class OAuthFileStore extends OAuthMemoryStore {
   }
 }
 
+export class OAuthDynamoDbStore {
+  constructor({ tableName, awsRegion = "", awsAccessKeyId = "", awsSecretAccessKey = "", ttlAttribute = "ttl", clock = () => new Date() }) {
+    if (!tableName) {
+      throw new Error("OAuthDynamoDbStore requires tableName");
+    }
+    if ((awsAccessKeyId && !awsSecretAccessKey) || (!awsAccessKeyId && awsSecretAccessKey)) {
+      throw new Error("OAuthDynamoDbStore requires both AWS access key id and secret access key when either is set");
+    }
+    const clientOptions = {};
+    if (awsRegion) {
+      clientOptions.region = awsRegion;
+    }
+    if (awsAccessKeyId && awsSecretAccessKey) {
+      clientOptions.credentials = {
+        accessKeyId: awsAccessKeyId,
+        secretAccessKey: awsSecretAccessKey
+      };
+    }
+    this.tableName = tableName;
+    this.ttlAttribute = ttlAttribute;
+    this.clock = clock;
+    this.db = DynamoDBDocumentClient.from(new DynamoDBClient(clientOptions), {
+      marshallOptions: { removeUndefinedValues: true }
+    });
+  }
+
+  async saveClient(client) {
+    await this.putRecord(this.key("client", client.client_id), "client", client);
+    return client;
+  }
+
+  async getClient(clientId) {
+    return this.getRecord(this.key("client", clientId));
+  }
+
+  async saveCode(code) {
+    await this.putRecord(this.key("code", code.code), "code", code);
+    return code;
+  }
+
+  async consumeCode(codeValue) {
+    return this.consumeRecord(this.key("code", codeValue), "used");
+  }
+
+  async saveAccessToken(token) {
+    await this.putRecord(this.key("access", token.access_token), "access", token);
+    return token;
+  }
+
+  async getAccessToken(value) {
+    const token = await this.getRecord(this.key("access", value));
+    if (!token || token.revoked || token.expires_at < this.clock().getTime()) {
+      return null;
+    }
+    return { ...token, access_token: value };
+  }
+
+  async saveRefreshToken(token) {
+    await this.putRecord(this.key("refresh", token.refresh_token), "refresh", token);
+    return token;
+  }
+
+  async consumeRefreshToken(value) {
+    return this.consumeRecord(this.key("refresh", value), "revoked");
+  }
+
+  async revoke(value) {
+    await Promise.all([
+      this.markRevoked(this.key("access", value)),
+      this.markRevoked(this.key("refresh", value))
+    ]);
+  }
+
+  key(kind, value) {
+    if (["code", "access", "refresh"].includes(kind)) {
+      return `${kind}#${sha256Hex(value)}`;
+    }
+    return `${kind}#${value}`;
+  }
+
+  async getRecord(pk) {
+    const result = await this.db.send(new GetCommand({
+      TableName: this.tableName,
+      Key: { pk }
+    }));
+    return this.toRecord(result.Item);
+  }
+
+  async putRecord(pk, kind, record) {
+    const ttl = record.expires_at ? Math.ceil(record.expires_at / 1000) : undefined;
+    await this.db.send(new PutCommand({
+      TableName: this.tableName,
+      Item: {
+        pk,
+        kind,
+        ...this.toStoredRecord(kind, record),
+        ...(ttl ? { [this.ttlAttribute]: ttl } : {})
+      }
+    }));
+  }
+
+  toStoredRecord(kind, record) {
+    if (kind === "code") {
+      const { code: _code, ...stored } = record;
+      return stored;
+    }
+    if (kind === "access") {
+      const { access_token: _accessToken, ...stored } = record;
+      return stored;
+    }
+    if (kind === "refresh") {
+      const { refresh_token: _refreshToken, ...stored } = record;
+      return stored;
+    }
+    return record;
+  }
+
+  async consumeRecord(pk, consumedField) {
+    try {
+      const result = await this.db.send(new UpdateCommand({
+        TableName: this.tableName,
+        Key: { pk },
+        UpdateExpression: "SET #consumed = :true",
+        ConditionExpression: "attribute_exists(pk) AND (attribute_not_exists(#consumed) OR #consumed = :false) AND #expiresAt > :now",
+        ExpressionAttributeNames: {
+          "#consumed": consumedField,
+          "#expiresAt": "expires_at"
+        },
+        ExpressionAttributeValues: {
+          ":true": true,
+          ":false": false,
+          ":now": this.clock().getTime()
+        },
+        ReturnValues: "ALL_NEW"
+      }));
+      return this.toRecord(result.Attributes);
+    } catch (error) {
+      if (isConditionalCheckFailed(error)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async markRevoked(pk) {
+    try {
+      await this.db.send(new UpdateCommand({
+        TableName: this.tableName,
+        Key: { pk },
+        UpdateExpression: "SET #revoked = :true",
+        ConditionExpression: "attribute_exists(pk)",
+        ExpressionAttributeNames: { "#revoked": "revoked" },
+        ExpressionAttributeValues: { ":true": true }
+      }));
+    } catch (error) {
+      if (!isConditionalCheckFailed(error)) {
+        throw error;
+      }
+    }
+  }
+
+  toRecord(item) {
+    if (!item) {
+      return null;
+    }
+    const { pk: _pk, kind: _kind, [this.ttlAttribute]: _ttl, ...record } = item;
+    return record;
+  }
+}
+
 export function randomToken(prefix) {
   return `${prefix}_${randomBytes(32).toString("base64url")}`;
+}
+
+function isConditionalCheckFailed(error) {
+  return error?.name === "ConditionalCheckFailedException";
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(String(value)).digest("hex");
 }
 
 function mapFromEntries(entries, key) {

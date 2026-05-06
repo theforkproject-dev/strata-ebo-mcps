@@ -1,4 +1,4 @@
-import { OAuthFileStore, OAuthMemoryStore, randomToken } from "./store.js";
+import { OAuthDynamoDbStore, OAuthFileStore, OAuthMemoryStore, randomToken } from "./store.js";
 import { safeEqual, sha256Hex, verifyPkce } from "./pkce.js";
 
 const SCOPES = "mcp:read mcp:write";
@@ -6,9 +6,7 @@ const SCOPES = "mcp:read mcp:write";
 export class OAuthServer {
   constructor(config) {
     this.config = config;
-    this.store = config.oauth.storePath
-      ? new OAuthFileStore({ filePath: config.oauth.storePath })
-      : new OAuthMemoryStore();
+    this.store = createOAuthStore(config.oauth);
   }
 
   canHandle(request) {
@@ -49,23 +47,23 @@ export class OAuthServer {
       }
 
       if (request.method === "POST" && path === "/oauth/register") {
-        return this.handleRegister(request, response);
+        return await this.handleRegister(request, response);
       }
 
       if (request.method === "GET" && path === "/oauth/authorize") {
-        return this.handleAuthorizeGet(request, response);
+        return await this.handleAuthorizeGet(request, response);
       }
 
       if (request.method === "POST" && path === "/oauth/authorize") {
-        return this.handleAuthorizePost(request, response);
+        return await this.handleAuthorizePost(request, response);
       }
 
       if (request.method === "POST" && path === "/oauth/token") {
-        return this.handleToken(request, response);
+        return await this.handleToken(request, response);
       }
 
       if (request.method === "POST" && path === "/oauth/revoke") {
-        return this.handleRevoke(request, response);
+        return await this.handleRevoke(request, response);
       }
 
       return oauthError(response, 405, "invalid_request", "method not allowed");
@@ -74,7 +72,7 @@ export class OAuthServer {
     }
   }
 
-  validateAccessToken(token) {
+  async validateAccessToken(token) {
     return this.store.getAccessToken(token);
   }
 
@@ -103,7 +101,7 @@ export class OAuthServer {
       token_endpoint_auth_method: authMethod,
       client_id_issued_at: Math.floor(Date.now() / 1000)
     };
-    this.store.saveClient(client);
+    await this.store.saveClient(client);
 
     return json(response, 201, {
       client_id: client.client_id,
@@ -117,10 +115,10 @@ export class OAuthServer {
     }, { "cache-control": "no-store" });
   }
 
-  handleAuthorizeGet(request, response, message = "") {
+  async handleAuthorizeGet(request, response, message = "") {
     const url = new URL(request.url, this.config.publicBaseUrl);
     const params = Object.fromEntries(url.searchParams.entries());
-    const validation = this.validateAuthorizeParams(params);
+    const validation = await this.validateAuthorizeParams(params);
     if (!validation.ok) {
       return html(response, 400, errorPage(validation.error));
     }
@@ -130,7 +128,7 @@ export class OAuthServer {
   async handleAuthorizePost(request, response) {
     const form = await readForm(request);
     const params = Object.fromEntries(form.entries());
-    const validation = this.validateAuthorizeParams(params);
+    const validation = await this.validateAuthorizeParams(params);
     if (!validation.ok) {
       return html(response, 400, errorPage(validation.error));
     }
@@ -139,7 +137,7 @@ export class OAuthServer {
     }
 
     const code = randomToken("strata_code");
-    this.store.saveCode({
+    await this.store.saveCode({
       code,
       client_id: params.client_id,
       redirect_uri: params.redirect_uri,
@@ -162,7 +160,7 @@ export class OAuthServer {
   async handleToken(request, response) {
     const form = await readForm(request);
     const grantType = form.get("grant_type");
-    const auth = this.authenticateClient(request, form);
+    const auth = await this.authenticateClient(request, form);
     if (!auth.ok) {
       return oauthError(response, 401, "invalid_client", auth.error);
     }
@@ -177,20 +175,20 @@ export class OAuthServer {
 
   handleRevoke = async (request, response) => {
     const form = await readForm(request);
-    const auth = this.authenticateClient(request, form, { allowMissingPublicClient: true });
+    const auth = await this.authenticateClient(request, form, { allowMissingPublicClient: true });
     if (!auth.ok) {
       return oauthError(response, 401, "invalid_client", auth.error);
     }
     const token = form.get("token");
     if (token) {
-      this.store.revoke(token);
+      await this.store.revoke(token);
     }
     response.writeHead(200, { "cache-control": "no-store" });
     response.end();
   };
 
-  exchangeCode(response, form, client) {
-    const code = this.store.consumeCode(form.get("code"));
+  async exchangeCode(response, form, client) {
+    const code = await this.store.consumeCode(form.get("code"));
     if (!code || code.client_id !== client.client_id) {
       return oauthError(response, 400, "invalid_grant", "authorization code is invalid or expired");
     }
@@ -207,15 +205,15 @@ export class OAuthServer {
     return this.issueTokens(response, client, code.scope);
   }
 
-  refreshToken(response, form, client) {
-    const prior = this.store.consumeRefreshToken(form.get("refresh_token"));
+  async refreshToken(response, form, client) {
+    const prior = await this.store.consumeRefreshToken(form.get("refresh_token"));
     if (!prior || prior.client_id !== client.client_id) {
       return oauthError(response, 400, "invalid_grant", "refresh token is invalid or expired");
     }
     return this.issueTokens(response, client, prior.scope);
   }
 
-  issueTokens(response, client, scope) {
+  async issueTokens(response, client, scope) {
     const now = Date.now();
     const accessToken = {
       access_token: randomToken("strata_at"),
@@ -231,8 +229,10 @@ export class OAuthServer {
       expires_at: now + this.config.oauth.refreshTokenTtlMs,
       revoked: false
     };
-    this.store.saveAccessToken(accessToken);
-    this.store.saveRefreshToken(refreshToken);
+    await Promise.all([
+      this.store.saveAccessToken(accessToken),
+      this.store.saveRefreshToken(refreshToken)
+    ]);
     return json(response, 200, {
       access_token: accessToken.access_token,
       token_type: "Bearer",
@@ -242,8 +242,8 @@ export class OAuthServer {
     }, { "cache-control": "no-store" });
   }
 
-  validateAuthorizeParams(params) {
-    const client = this.store.getClient(params.client_id);
+  async validateAuthorizeParams(params) {
+    const client = await this.store.getClient(params.client_id);
     if (!client) {
       return { ok: false, error: "Unknown OAuth client." };
     }
@@ -259,13 +259,13 @@ export class OAuthServer {
     return { ok: true, client };
   }
 
-  authenticateClient(request, form, options = {}) {
+  async authenticateClient(request, form, options = {}) {
     const basic = parseBasicAuth(request.headers.authorization || "");
     const clientId = basic?.clientId || form.get("client_id");
     if (!clientId) {
       return { ok: false, error: "client_id is required" };
     }
-    const client = this.store.getClient(clientId);
+    const client = await this.store.getClient(clientId);
     if (!client) {
       return { ok: false, error: "unknown client" };
     }
@@ -289,6 +289,25 @@ export class OAuthServer {
     }
     return false;
   }
+}
+
+function createOAuthStore(oauthConfig) {
+  if (oauthConfig.storeBackend === "dynamodb") {
+    return new OAuthDynamoDbStore({
+      tableName: oauthConfig.dynamoDb.tableName,
+      awsRegion: oauthConfig.dynamoDb.awsRegion,
+      awsAccessKeyId: oauthConfig.dynamoDb.awsAccessKeyId,
+      awsSecretAccessKey: oauthConfig.dynamoDb.awsSecretAccessKey,
+      ttlAttribute: oauthConfig.dynamoDb.ttlAttribute
+    });
+  }
+  if (oauthConfig.storeBackend === "memory") {
+    return new OAuthMemoryStore();
+  }
+  if (oauthConfig.storeBackend === "file") {
+    return new OAuthFileStore({ filePath: oauthConfig.storePath });
+  }
+  throw new Error(`Unsupported OAuth store backend: ${oauthConfig.storeBackend}`);
 }
 
 function consentPage({ params, client, message }) {

@@ -16,7 +16,9 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1043.0",
     "@aws-sdk/client-s3": "^3.1043.0",
+    "@aws-sdk/lib-dynamodb": "^3.1043.0",
     "@tinfoilsh/verifier": "^1.1.4"
   }
 }
