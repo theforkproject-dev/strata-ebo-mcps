@@ -62,7 +62,7 @@ The live witness runs registry-scoped workflow enforcement, so this demo signs w
 
 ## Live Tinfoil MCP Gateway
 
-The email MCP gateway is also deployed as a Tinfoil container in dry-run email mode:
+The email MCP gateway is also deployed as a Tinfoil container with OAuth, real Resend sending, durable OAuth storage, and durable certificate bundle publication:
 
 ```text
 https://strata-email-mcp-gateway.amotivv.containers.tinfoil.dev/mcp
@@ -74,7 +74,9 @@ Config repo:
 theforkproject-dev/strata-email-mcp-gateway
 ```
 
-The live gateway exposes Claude-compatible MCP tools, calls the live Tinfoil L1 witness with signed witness requests, uses the Fly-hosted L2 policy witnesses and registry, and returns verifier-ready certificate bundles from `/certificates/:id/bundle`.
+The live gateway exposes Claude-compatible MCP tools, calls the live Tinfoil L1 witness with signed witness requests, uses the Fly-hosted L2 policy witnesses and registry, stores OAuth client/token state in DynamoDB, and returns durable verifier-ready certificate bundles through CloudFront.
+
+Claude Desktop OAuth persistence has been verified across Tinfoil gateway redeploys. Refresh tokens use a seven-day sliding window by default.
 
 The active Fly registry authorizes both the original Fly L1 witnesses and the official Tinfoil L1 witness so certificates from this gateway verify under the same registry plane.
 
@@ -83,7 +85,7 @@ The active Fly registry authorizes both the original Fly L1 witnesses and the of
 Use the guarded helper for repeatable live gateway deploys:
 
 ```bash
-npm run deploy:tinfoil-gateway -- --tag v0.1.0-email-gateway.14 --image-tag tinfoil-email-gateway-011
+npm run deploy:tinfoil-gateway -- --tag v0.1.0-email-gateway.15 --image-tag tinfoil-email-gateway-012
 ```
 
 The default is a dry run. Add `--apply` only when ready to mutate Docker/GHCR, the Tinfoil config repo, GitHub releases, and the live Tinfoil container.
@@ -147,9 +149,9 @@ Implemented endpoints:
 
 The flow supports Dynamic Client Registration, PKCE S256 authorization code exchange, refresh token rotation, and MCP bearer-token validation.
 
-OAuth clients, authorization codes, access tokens, and refresh tokens are persisted to `OAUTH_STORE_PATH`. On Fly this is `/data/email-mcp/oauth-store.json` on the mounted MCP volume.
+OAuth clients, authorization codes, access tokens, and refresh tokens can be persisted to a local JSON file with `OAUTH_STORE_BACKEND=file` and `OAUTH_STORE_PATH`, or to DynamoDB with `OAUTH_STORE_BACKEND=dynamodb` and the `OAUTH_DYNAMODB_*` settings.
 
-Current limitation: the file store is appropriate for one MCP machine. If the app scales horizontally, replace it with a shared database-backed store.
+The live Tinfoil gateway uses DynamoDB so Claude Desktop remains connected across gateway redeploys. Authorization codes, access tokens, and refresh tokens use SHA-256-derived DynamoDB keys and omit raw token/code values from stored item attributes. The default refresh-token TTL is seven days.
 
 ## Governance Policy Bundle
 
