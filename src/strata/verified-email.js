@@ -45,6 +45,8 @@ import {
   verifyPolicyQuorumAuthority
 } from "../policy/email-policy.js";
 import { fetchOperatorRegistryBinding, fetchRegistryBinding } from "../registry/email-registry.js";
+import { loadCertificateBundle } from "../certificates/bundle.js";
+import { createDurableBundleLocation, publishCertificateBundle } from "../certificates/publisher.js";
 
 export async function createActionRegistry(config) {
   const policyBundle = await loadConfiguredPolicyBundle(config);
@@ -433,6 +435,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     registry: registryCertificateBinding(registryBinding),
     authority_pins: authorityPins(config, registryBinding, policyBundle),
     tinfoil_attestation: tinfoilAttestation,
+    durable_publication_intent: durablePublicationIntent(config),
     policy: {
       tier: "level-2-policy",
       decision: policyQuorum.decision,
@@ -465,6 +468,9 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
   const certificateDigest = digestValue(certificateBody);
   const certificate = { ...certificateBody, certificate_digest: certificateDigest };
   writeJson(paths.certificate, certificate);
+  const durablePublication = await publishDurableBundle(config, { runId, runDir: outDir, certificateDigest });
+  const gatewayBundleUrl = `${certificateUrl}/bundle`;
+  const primaryBundleUrl = publishedBundleUrl(durablePublication) || gatewayBundleUrl;
 
   return {
     ok: verified,
@@ -472,7 +478,10 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     out_dir: outDir,
     certificate_ref: certificateUrl,
     certificate_url: certificateUrl,
-    bundle_url: `${certificateUrl}/bundle`,
+    bundle_url: primaryBundleUrl,
+    gateway_bundle_url: gatewayBundleUrl,
+    durable_bundle_url: publishedBundleUrl(durablePublication),
+    durable_publication: durablePublication,
     certificate_digest: certificateDigest,
     tool_output: toolResult.output,
     policy_quorum: policyQuorum,
@@ -500,7 +509,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     artifacts: {
       ...publicArtifactUrls(config, runId),
       certificate: certificateUrl,
-      bundle: `${certificateUrl}/bundle`
+      bundle: gatewayBundleUrl
     },
     local_artifacts: {
       certificate: paths.certificate,
@@ -631,6 +640,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     registry: registryCertificateBinding(registryBinding),
     authority_pins: authorityPins(config, registryBinding, policyBundle),
     tinfoil_attestation: tinfoilAttestation,
+    durable_publication_intent: durablePublicationIntent(config),
     policy: {
       tier: "level-2-policy",
       decision: policyQuorum.decision,
@@ -666,6 +676,9 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
   const certificateDigest = digestValue(certificateBody);
   const certificate = { ...certificateBody, certificate_digest: certificateDigest };
   writeJson(paths.certificate, certificate);
+  const durablePublication = await publishDurableBundle(config, { runId, runDir: outDir, certificateDigest });
+  const gatewayBundleUrl = `${certificateUrl}/bundle`;
+  const primaryBundleUrl = publishedBundleUrl(durablePublication) || gatewayBundleUrl;
 
   return {
     ok: false,
@@ -683,7 +696,10 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     commitment: publicCommitment,
     certificate_ref: certificateUrl,
     certificate_url: certificateUrl,
-    bundle_url: `${certificateUrl}/bundle`,
+    bundle_url: primaryBundleUrl,
+    gateway_bundle_url: gatewayBundleUrl,
+    durable_bundle_url: publishedBundleUrl(durablePublication),
+    durable_publication: durablePublication,
     certificate_digest: certificateDigest,
     tool_output: null,
     receipt_count: receipts.length,
@@ -693,7 +709,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     artifacts: {
       ...publicArtifactUrls(config, runId),
       certificate: certificateUrl,
-      bundle: `${certificateUrl}/bundle`
+      bundle: gatewayBundleUrl
     },
     local_artifacts: {
       certificate: paths.certificate,
@@ -1106,6 +1122,50 @@ function registryCertificateBinding(registryBinding) {
     policy_bundle_digest: registryBinding.epoch.policy_bundle_digest,
     policy_bundle_url: registryBinding.epoch.policy_bundle_url || null,
     pinned: registryBinding.pinned || null
+  };
+}
+
+async function publishDurableBundle(config, { runId, runDir, certificateDigest }) {
+  const location = createDurableBundleLocation(config, { runId, certificateDigest });
+  if (!location) {
+    return null;
+  }
+  const publication = { ...location, status: "published" };
+  const bundle = loadCertificateBundle({
+    config,
+    runId,
+    runDir,
+    bundleUrl: publication.bundle_url,
+    durablePublication: publication,
+    recipientVerifications: []
+  });
+  return publishCertificateBundle(config, {
+    runId,
+    certificateDigest,
+    bundle,
+    durablePublication: publication
+  });
+}
+
+function publishedBundleUrl(publication) {
+  return publication?.status === "published" ? publication.bundle_url : null;
+}
+
+function durablePublicationIntent(config) {
+  if (config.certificateBundle?.backend !== "s3-cloudfront") {
+    return null;
+  }
+  return {
+    version: "strata.certificate_bundle_publication_intent.v1",
+    backend: "s3-cloudfront",
+    scope: "complete_bundle_only",
+    bucket: config.certificateBundle.s3Bucket || null,
+    prefix: config.certificateBundle.s3Prefix || null,
+    public_base_url: config.certificateBundle.publicBaseUrl || null,
+    key_template: "<prefix>/email/<run_id>/<certificate_digest>/bundle.json",
+    retention_mode: config.certificateBundle.lockMode || null,
+    no_overwrite: true,
+    note: "The durable bundle URL is content-bound after certificate_digest is computed; per-artifact URLs are gateway-local debug references."
   };
 }
 

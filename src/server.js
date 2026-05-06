@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { EmailMcpServer, MCP_PROTOCOL_VERSION } from "./mcp-server.js";
 import { errorResponse, isNotification, parseJsonRpc, successResponse, validateRequest } from "./jsonrpc.js";
 import { SessionManager } from "./session.js";
 import { OAuthServer } from "./oauth/server.js";
+import { loadCertificateBundle, loadRecipientVerifications } from "./certificates/bundle.js";
 
 const config = loadConfig();
 const mcp = new EmailMcpServer(config);
@@ -205,7 +206,13 @@ function serveCertificate(request, response) {
   }
 
   if (parts.length === 3 && parts[2] === "bundle") {
-    return json(response, 200, loadCertificateBundle(runId, runDir));
+    const certificate = readJson(certificatePath);
+    return json(response, 200, loadCertificateBundle({
+      config,
+      runId,
+      runDir,
+      recipientVerifications: loadRecipientVerifications({ config, certificate, runId })
+    }));
   }
 
   if (parts.length === 4 && parts[2] === "artifacts") {
@@ -245,41 +252,6 @@ function serveCertificateArtifact(response, runDir, artifactName) {
   }
   response.writeHead(200, { "content-type": artifact.type });
   response.end(readFileSync(artifactPath, "utf8"));
-}
-
-function loadCertificateBundle(runId, runDir) {
-  const certificate = readJson(join(runDir, "certificate.json"));
-  return {
-    version: "strata.email.certificate_bundle.v1",
-    run_id: runId,
-    bundle_url: `${config.certificateBaseUrl}/${runId}/bundle`,
-    certificate,
-    receipts: readJsonl(join(runDir, "receipts.jsonl")),
-    keyring: readJson(join(runDir, "keyring.json")),
-    checkpoint: readJson(join(runDir, "checkpoint.json")),
-    transparency_log: readJsonl(join(runDir, "transparency-log.jsonl")),
-    verification: readJson(join(runDir, "verification.json")),
-    admission_manifest: readOptionalJson(join(runDir, "admission-manifest.json")),
-    operator_registry: readOptionalJson(join(runDir, "operator-registry.json")),
-    policy_decision: readOptionalJson(join(runDir, "policy-decision.json")),
-    policy_bundle: readOptionalJson(join(runDir, "policy-bundle.json")),
-    registry_epoch: readOptionalJson(join(runDir, "registry-epoch.json")),
-    gateway_attestation: readOptionalJson(join(runDir, "gateway-attestation.json")),
-    l1_witness_attestations: readOptionalJson(join(runDir, "l1-witness-attestations.json")),
-    recipient_verifications: loadRecipientVerifications(certificate, runId)
-  };
-}
-
-function loadRecipientVerifications(certificate, runId) {
-  const dir = join(config.dataDir, "recipient-verifications");
-  if (!existsSync(dir)) {
-    return [];
-  }
-  return readdirSync(dir)
-    .filter((file) => file.endsWith(".json"))
-    .map((file) => readOptionalJson(join(dir, file)))
-    .filter(Boolean)
-    .filter((receipt) => receipt.certificate_digest === certificate.certificate_digest || String(receipt.certificate_ref || "").includes(runId));
 }
 
 function readJson(path) {

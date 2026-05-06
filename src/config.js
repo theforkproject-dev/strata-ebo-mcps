@@ -32,6 +32,17 @@ export function loadConfig(env = process.env) {
       resendApiKey: env.RESEND_API_KEY || "",
       resendBaseUrl: trimSlash(env.RESEND_BASE_URL || "https://api.resend.com")
     },
+    certificateBundle: {
+      backend: env.CERTIFICATE_BUNDLE_STORE_BACKEND || "local",
+      awsRegion: env.CERTIFICATE_BUNDLE_AWS_REGION || env.AWS_REGION || "",
+      awsAccessKeyId: env.CERTIFICATE_BUNDLE_AWS_ACCESS_KEY_ID || "",
+      awsSecretAccessKey: env.CERTIFICATE_BUNDLE_AWS_SECRET_ACCESS_KEY || "",
+      s3Bucket: env.CERTIFICATE_BUNDLE_S3_BUCKET || "",
+      s3Prefix: trimSlash(env.CERTIFICATE_BUNDLE_S3_PREFIX || "certificates"),
+      publicBaseUrl: trimSlash(env.CERTIFICATE_BUNDLE_PUBLIC_BASE || ""),
+      lockMode: env.CERTIFICATE_BUNDLE_LOCK_MODE || "",
+      publishRequired: truthy(env.CERTIFICATE_BUNDLE_PUBLISH_REQUIRED)
+    },
     oauth: {
       enabled: Boolean(env.OAUTH_ISSUER),
       issuer: trimSlash(env.OAUTH_ISSUER || publicBaseUrl),
