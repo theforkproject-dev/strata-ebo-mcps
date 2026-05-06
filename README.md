@@ -78,6 +78,27 @@ The live gateway exposes Claude-compatible MCP tools, calls the live Tinfoil L1 
 
 The active Fly registry authorizes both the original Fly L1 witnesses and the official Tinfoil L1 witness so certificates from this gateway verify under the same registry plane.
 
+### Tinfoil Gateway Deployment Helper
+
+Use the guarded helper for repeatable live gateway deploys:
+
+```bash
+npm run deploy:tinfoil-gateway -- --tag v0.1.0-email-gateway.14 --image-tag tinfoil-email-gateway-011
+```
+
+The default is a dry run. Add `--apply` only when ready to mutate Docker/GHCR, the Tinfoil config repo, GitHub releases, and the live Tinfoil container.
+
+The helper encodes the known-good deployment sequence:
+
+1. Build and push the `linux/amd64` gateway image.
+2. Update `tinfoil-config.yml` with the immutable image digest, config tag, image digest, and full secret reference list.
+3. Commit, tag, and push the config repo.
+4. Wait for the config repo's `Build and Attest` workflow to create `tinfoil-deployment.json` and `tinfoil.hash`.
+5. Relaunch through the Tinfoil API with the full secret reference list.
+6. Poll readiness, then verify health and Tinfoil attestation.
+
+Do not manually create GitHub releases for Tinfoil config tags. The Tinfoil release must be created by the `Build and Attest` workflow so it contains the measured deployment assets.
+
 ## Real Resend Send
 
 Create `.env` from `.env.example`, set:
