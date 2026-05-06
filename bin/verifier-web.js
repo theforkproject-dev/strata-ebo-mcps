@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { verifyCertificateBundleUrl } from "../src/verify/certificate-verifier.js";
+import { normalizeBundleUrl, verifyCertificateBundleUrl } from "../src/verify/certificate-verifier.js";
 
 const host = process.env.HOST || "0.0.0.0";
 const port = Number(process.env.PORT || 8080);
@@ -21,12 +21,13 @@ const server = createServer(async (request, response) => {
       if (!body.bundle_url || typeof body.bundle_url !== "string") {
         return json(response, 400, { ok: false, error: "bundle_url is required" });
       }
-      const report = await verifyCertificateBundleUrl(body.bundle_url.trim());
+      const normalizedUrl = normalizeBundleUrl(body.bundle_url);
+      const report = await verifyCertificateBundleUrl(normalizedUrl);
       return json(response, report.ok ? 200 : 422, report);
     }
     return json(response, 404, { ok: false, error: "not found" });
   } catch (error) {
-    return json(response, 500, { ok: false, error: error.message });
+    return json(response, 500, { ok: false, error: error.message, hint: verifierHint(error.message) });
   }
 });
 
@@ -46,6 +47,16 @@ async function readJson(request) {
 function json(response, status, body) {
   response.writeHead(status, { "content-type": "application/json" });
   response.end(`${JSON.stringify(body, null, 2)}\n`);
+}
+
+function verifierHint(message) {
+  if (/certificate not found|returned 404/i.test(message)) {
+    return "The gateway could not find that certificate bundle. Current demo certificates are stored on the Tinfoil gateway ramdisk, so older bundle URLs stop working after a gateway relaunch. Generate a fresh certificate or use a bundle saved as an artifact.";
+  }
+  if (/Invalid URL/i.test(message)) {
+    return "Paste either the certificate URL or the /bundle URL returned by the MCP tool.";
+  }
+  return "Check that the URL is reachable and points to a Strata certificate bundle.";
 }
 
 function indexHtml() {
@@ -97,9 +108,9 @@ function indexHtml() {
 <body>
   <main>
     <h1>Strata Certificate Verifier</h1>
-    <p class="lede">Paste a Strata certificate bundle URL. This verifier runs outside Claude Desktop and outside the gateway, then checks the certificate, receipt chain, policy quorum, registry authority, and Tinfoil attestations.</p>
+    <p class="lede">Paste a Strata certificate or bundle URL. This verifier runs outside Claude Desktop and outside the gateway, then checks the certificate, receipt chain, policy quorum, registry authority, and Tinfoil attestations.</p>
     <form id="verify-form">
-      <input id="bundle-url" name="bundle_url" placeholder="https://.../certificates/.../bundle" autocomplete="off" spellcheck="false" required>
+      <input id="bundle-url" name="bundle_url" placeholder="https://.../certificates/... or https://.../certificates/.../bundle" autocomplete="off" spellcheck="false" required>
       <button id="verify-button" type="submit">Verify Certificate</button>
     </form>
     <section id="result"></section>
@@ -116,6 +127,10 @@ function indexHtml() {
       try {
         const response = await fetch('/api/verify', { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ bundle_url: input.value }) });
         const report = await response.json();
+        if (!report.checks && report.error) {
+          renderError(report);
+          return;
+        }
         render(report);
       } catch (error) {
         result.innerHTML = '<div class="card"><span class="badge invalid">ERROR</span><pre>' + escapeHtml(error.message) + '</pre></div>';
@@ -134,6 +149,9 @@ function indexHtml() {
         '<div class="card"><h2>What this proves</h2><div class="explain">' + explanationCards(report).map(renderClaim).join('') + '</div></div>' +
         Object.entries(groups).map(([name, checks]) => '<div class="card"><details open><summary>' + escapeHtml(title(name)) + '</summary>' + checks.map(renderCheck).join('') + '</details></div>').join('') +
         '<div class="card"><details><summary>Raw verifier report</summary><pre>' + escapeHtml(JSON.stringify(report, null, 2)) + '</pre></details></div>';
+    }
+    function renderError(report) {
+      result.innerHTML = '<div class="card"><div class="verdict"><div><h2>Could not verify this URL</h2><p class="story">' + escapeHtml(report.hint || 'The verifier could not load or parse the certificate bundle.') + '</p></div><span class="badge invalid">ERROR</span></div><pre>' + escapeHtml(report.error || 'Unknown error') + '</pre></div>';
     }
     function narrative(report) {
       if (!report.ok) return 'The verifier found at least one failed check. This bundle should not be treated as a valid Strata certificate until the failed checks are resolved.';

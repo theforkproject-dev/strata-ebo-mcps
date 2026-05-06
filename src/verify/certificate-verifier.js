@@ -11,8 +11,20 @@ import { verifyOperatorRegistryRecord } from "../registry/email-registry.js";
 import { Verifier, hashAttestationDocument } from "@tinfoilsh/verifier";
 
 export async function verifyCertificateBundleUrl(bundleUrl) {
-  const bundle = await getJson(bundleUrl);
-  return verifyCertificateBundle(bundle, { sourceUrl: bundleUrl });
+  const normalizedUrl = normalizeBundleUrl(bundleUrl);
+  const bundle = await getJson(normalizedUrl);
+  return verifyCertificateBundle(bundle, { sourceUrl: normalizedUrl });
+}
+
+export function normalizeBundleUrl(value) {
+  const url = new URL(String(value || "").trim());
+  url.hash = "";
+  url.search = "";
+  url.pathname = url.pathname.replace(/\/$/, "");
+  if (/\/certificates\/[^/]+$/.test(url.pathname)) {
+    url.pathname = `${url.pathname}/bundle`;
+  }
+  return url.toString();
 }
 
 export async function verifyCertificateBundle(bundle, { sourceUrl = "" } = {}) {
