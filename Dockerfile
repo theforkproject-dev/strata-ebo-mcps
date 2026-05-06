@@ -5,7 +5,8 @@ WORKDIR /app
 ARG CACHE_BUST=0
 RUN printf "%s" "$CACHE_BUST" > /tmp/cache-bust
 
-COPY package.json ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
 COPY src ./src
 COPY bin ./bin
 COPY policies ./policies

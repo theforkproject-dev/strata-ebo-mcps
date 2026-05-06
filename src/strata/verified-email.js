@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assembleAttestationBundle, hashAttestationDocument } from "@tinfoilsh/verifier";
 import {
   ActionGateway,
   HttpWitnessClient,
@@ -1371,6 +1372,7 @@ async function measuredRuntimeSummary(evidence) {
   const observedAttestation = await fetchObservedTinfoilAttestation(evidence);
   return {
     document: observedAttestation?.document || null,
+    attestationBundle: observedAttestation?.attestationBundle || null,
     summary: {
     platform: "tinfoil-containers",
     witness_id: evidence.witnessId || null,
@@ -1395,12 +1397,14 @@ function writeTinfoilAttestationArtifacts(paths, gatewayObserved, l1Observed) {
     writeJson(paths.gatewayAttestation, {
       version: "strata.tinfoil_observed_attestation.v1",
       runtime: gatewayObserved.summary,
-      document: gatewayObserved.document
+      document: gatewayObserved.document,
+      attestation_bundle: gatewayObserved.attestationBundle || null
     });
   }
   const l1Documents = l1Observed.filter((item) => item.document).map((item) => ({
     runtime: item.summary,
-    document: item.document
+    document: item.document,
+    attestation_bundle: item.attestationBundle || null
   }));
   if (l1Documents.length > 0) {
     writeJson(paths.l1WitnessAttestations, {
@@ -1428,31 +1432,31 @@ async function fetchObservedTinfoilAttestation(evidence) {
   }
   const observedAt = new Date().toISOString();
   try {
-    const response = await fetch(evidence.attestationUrl, { headers: { accept: "application/json" } });
-    const text = await response.text();
-    let document;
-    try {
-      document = JSON.parse(text);
-    } catch (error) {
-      throw new Error(`attestation response was not JSON: ${error.message}`);
-    }
-    if (!response.ok) {
-      throw new Error(document.error || `attestation endpoint returned ${response.status}`);
-    }
+    const attestationBundle = evidence.configRepo
+      ? await assembleObservedAttestationBundle(evidence)
+      : null;
+    const document = attestationBundle?.enclaveAttestationReport || await fetchAttestationDocument(evidence.attestationUrl);
     if (!document.format || !document.body) {
       throw new Error("attestation document must include format and body");
     }
+    const tinfoilDocumentHash = await hashAttestationDocument(document);
     return {
       document,
+      attestationBundle,
       summary: {
       status: "ok",
       observed_at: observedAt,
       source_url: evidence.attestationUrl,
       format: document.format,
       attestation_document_digest: digestValue(document),
+      tinfoil_document_hash: tinfoilDocumentHash,
       body_digest: sha256Hex(document.body),
       body_length: document.body.length,
-      digest_semantics: "sha256 over Strata canonical JSON for the Tinfoil /.well-known/tinfoil-attestation document"
+      release_digest: attestationBundle?.digest || null,
+      has_sigstore_bundle: Boolean(attestationBundle?.sigstoreBundle),
+      has_vcek: Boolean(attestationBundle?.vcek),
+      has_enclave_cert: Boolean(attestationBundle?.enclaveCert),
+      digest_semantics: "attestation_document_digest is sha256 over Strata canonical JSON for the Tinfoil /.well-known/tinfoil-attestation document; tinfoil_document_hash is the official Tinfoil hashAttestationDocument(format + body) value used for certificate SAN verification"
       }
     };
   } catch (error) {
@@ -1469,6 +1473,30 @@ async function fetchObservedTinfoilAttestation(evidence) {
       }
     };
   }
+}
+
+async function assembleObservedAttestationBundle(evidence) {
+  const enclaveHost = new URL(evidence.attestationUrl).hostname;
+  const bundle = await assembleAttestationBundle(enclaveHost, evidence.configRepo);
+  if (bundle.enclaveAttestationReport?.format && bundle.enclaveAttestationReport?.body) {
+    return bundle;
+  }
+  throw new Error("assembled Tinfoil attestation bundle is missing enclave attestation report");
+}
+
+async function fetchAttestationDocument(url) {
+  const response = await fetch(url, { headers: { accept: "application/json" } });
+  const text = await response.text();
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`attestation response was not JSON: ${error.message}`);
+  }
+  if (!response.ok) {
+    throw new Error(document.error || `attestation endpoint returned ${response.status}`);
+  }
+  return document;
 }
 
 function tinfoilReleaseRef(evidence) {

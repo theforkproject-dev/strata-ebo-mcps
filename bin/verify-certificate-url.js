@@ -9,6 +9,7 @@ import {
 } from "../src/strata/primitives.js";
 import { policyBundleDigest, verifyPolicyQuorumAuthority } from "../src/policy/email-policy.js";
 import { verifyOperatorRegistryRecord } from "../src/registry/email-registry.js";
+import { Verifier, hashAttestationDocument } from "@tinfoilsh/verifier";
 
 const bundleUrl = process.argv[2];
 if (!bundleUrl) {
@@ -18,7 +19,7 @@ if (!bundleUrl) {
 
 try {
   const bundle = await getJson(bundleUrl);
-  const report = verifyBundle(bundle, bundleUrl);
+  const report = await verifyBundle(bundle, bundleUrl);
   console.log(JSON.stringify(report, null, 2));
   process.exit(report.ok ? 0 : 1);
 } catch (error) {
@@ -26,7 +27,7 @@ try {
   process.exit(1);
 }
 
-function verifyBundle(bundle, sourceUrl) {
+async function verifyBundle(bundle, sourceUrl) {
   const checks = [];
   const certificate = bundle.certificate;
   const registryArtifact = bundle.registry_epoch;
@@ -119,9 +120,10 @@ function verifyBundle(bundle, sourceUrl) {
     add(checks, "operator_registry.artifact_present", false, {});
   }
 
-  verifyGatewayAttestation(checks, bundle);
-  verifyL1Attestations(checks, bundle);
-
+  const runtimeVerifications = [];
+  runtimeVerifications.push(verifyGatewayAttestation(checks, bundle));
+  runtimeVerifications.push(...verifyL1Attestations(checks, bundle));
+  await Promise.all(runtimeVerifications);
   return result({
     sourceUrl,
     certificate: {
@@ -135,7 +137,7 @@ function verifyBundle(bundle, sourceUrl) {
   });
 }
 
-function verifyGatewayAttestation(checks, bundle) {
+async function verifyGatewayAttestation(checks, bundle) {
   const gateway = bundle.certificate?.tinfoil_attestation?.gateway;
   const artifact = bundle.gateway_attestation;
   add(checks, "gateway_attestation.present", Boolean(gateway?.attestation_digest), {
@@ -146,14 +148,20 @@ function verifyGatewayAttestation(checks, bundle) {
     return;
   }
   const documentDigest = digestValue(artifact.document);
+  const tinfoilDocumentHash = await hashAttestationDocument(artifact.document);
   add(checks, "gateway_attestation.document_digest", documentDigest === gateway.attestation_digest, {
     expected: gateway.attestation_digest,
     actual: documentDigest
+  });
+  add(checks, "gateway_attestation.tinfoil_document_hash", tinfoilDocumentHash === gateway.observed_attestation?.tinfoil_document_hash, {
+    expected: gateway.observed_attestation?.tinfoil_document_hash || null,
+    actual: tinfoilDocumentHash
   });
   add(checks, "gateway_attestation.format_body", Boolean(artifact.document.format && artifact.document.body), {
     format: artifact.document.format || null,
     body_length: artifact.document.body?.length || 0
   });
+  await verifyOfficialTinfoilBundle(checks, "gateway_attestation.official_verifier", gateway, artifact.attestation_bundle);
 }
 
 function verifyL1Attestations(checks, bundle) {
@@ -161,20 +169,56 @@ function verifyL1Attestations(checks, bundle) {
   const observed = bundle.l1_witness_attestations?.witnesses || [];
   if (l1.length === 0) {
     add(checks, "l1_attestation.present", false, {});
-    return;
+    return [];
   }
   add(checks, "l1_attestation.static_present", l1.every((item) => Boolean(item.attestation_digest)), {
     witness_count: l1.length
   });
   if (observed.length === 0) {
     warn(checks, "l1_attestation.observed_artifact_present", "No observed L1 attestation documents were included; static L1 attestation refs are present.");
-    return;
+    return [];
   }
-  for (const item of observed) {
+  return observed.map(async (item) => {
     const digest = item.document ? digestValue(item.document) : null;
+    const tinfoilDocumentHash = item.document ? await hashAttestationDocument(item.document) : null;
     add(checks, `l1_attestation.${item.runtime?.witness_id || item.runtime?.container_name || "unknown"}.document_digest`, digest === item.runtime?.observed_attestation?.attestation_document_digest, {
       expected: item.runtime?.observed_attestation?.attestation_document_digest || null,
       actual: digest
+    });
+    add(checks, `l1_attestation.${item.runtime?.witness_id || item.runtime?.container_name || "unknown"}.tinfoil_document_hash`, tinfoilDocumentHash === item.runtime?.observed_attestation?.tinfoil_document_hash, {
+      expected: item.runtime?.observed_attestation?.tinfoil_document_hash || null,
+      actual: tinfoilDocumentHash
+    });
+    await verifyOfficialTinfoilBundle(checks, `l1_attestation.${item.runtime?.witness_id || item.runtime?.container_name || "unknown"}.official_verifier`, item.runtime, item.attestation_bundle);
+  });
+}
+
+async function verifyOfficialTinfoilBundle(checks, name, runtime, attestationBundle) {
+  if (!runtime?.config_repo) {
+    add(checks, name, false, { error: "runtime config_repo missing" });
+    return;
+  }
+  if (!attestationBundle) {
+    add(checks, name, false, { error: "attestation_bundle artifact missing" });
+    return;
+  }
+  try {
+    const verifier = new Verifier({ configRepo: runtime.config_repo });
+    const attestation = await verifier.verifyBundle(attestationBundle);
+    const verificationDocument = verifier.getVerificationDocument();
+    add(checks, name, true, {
+      config_repo: runtime.config_repo,
+      release_digest: attestationBundle.digest,
+      measurement_type: attestation.measurement?.type,
+      measurement_registers: attestation.measurement?.registers,
+      tls_public_key_fingerprint: attestation.tlsPublicKeyFingerprint || null,
+      hpke_public_key: attestation.hpkePublicKey || null,
+      verification_document: verificationDocument || null
+    });
+  } catch (error) {
+    add(checks, name, false, {
+      config_repo: runtime.config_repo,
+      error: error.message
     });
   }
 }
