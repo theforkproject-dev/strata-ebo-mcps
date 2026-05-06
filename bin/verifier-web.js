@@ -167,7 +167,7 @@ function indexHtml() {
         { title: 'The action followed the receipt chain', good: ok('receipt_chain'), text: 'The session receipts and checkpoint form a valid signed chain, so the recorded action flow is internally consistent.' },
         { title: 'The policy decision matched signed rules', good: ok('policy_bundle') && ok('registry.l2'), text: 'The policy bundle digest matched the certificate, and the Level 2 policy witnesses authorized the email under that policy.' },
         { title: 'The witness and registry authority checked out', good: ok('registry') && ok('authority_pins'), text: 'The registry epoch, registry trust anchor, and policy digest matched the pinned values, so the registry host was not treated as the source of authority.' },
-        { title: 'The gateway runtime was Tinfoil-attested', good: ok('gateway_attestation'), text: 'The gateway attestation bundle was verified with Tinfoil\'s published verifier, tying the action gateway to a measured enclave runtime.' },
+        { title: 'The gateway runtime was Tinfoil-attested', good: ok('gateway_attestation'), text: 'The gateway attestation bundle was verified with the published Tinfoil verifier, tying the action gateway to a measured enclave runtime.' },
         { title: 'The L1 witness runtime was Tinfoil-attested', good: ok('l1_attestation'), text: 'The Level 1 mechanical witness attestation bundle was verified, tying the witness signature path to a measured enclave runtime.' },
         { title: 'Operator admission was authorized', good: ok('operator_registry'), text: 'The operator admission key was checked against the signed operator registry record included in the bundle.' }
       ];
