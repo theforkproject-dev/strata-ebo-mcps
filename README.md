@@ -20,7 +20,7 @@ Core claim:
 - `email_preview`: Canonicalizes an email and returns payload digests without sending.
 - `email_send_verified`: Sends an email through the Strata gateway and returns provider metadata plus certificate refs.
 - `email_verify_received`: Verifies a received email against a certificate and writes a recipient verification receipt.
-- `gateway_status`: Checks email provider configuration, witness health, quorum availability, and certificate transmission fields.
+- `gateway_status`: Checks email provider configuration, witness health, L1 registry authorization validity, quorum availability, and certificate transmission fields.
 
 `email_send_verified` requires both L1 mechanical quorum and L2 policy quorum. The default L2 policy allows sends only when sender domain is `theforkproject.com`, every recipient domain is `amotivv.com`, recipient count is at most 3, subject starts with `[Verified]`, body/subject do not contain denied keywords, and tags include `conversation_id` and `turn_id`.
 

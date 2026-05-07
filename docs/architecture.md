@@ -8,7 +8,7 @@ The server combines two existing patterns:
 ## Flow
 
 1. MCP client calls `tools/list` and discovers `gateway_status` and `email_send_verified`.
-2. MCP client may call `gateway_status` to check provider configuration and witness quorum availability.
+2. MCP client may call `gateway_status` to check provider configuration, witness quorum availability, and L1 witness registry authorization freshness.
 3. MCP client calls `email_send_verified` with recipient, subject, text/html, and required policy tags.
 4. The server canonicalizes the email into a digest-first payload commitment.
 5. Three Level 2 policy witnesses evaluate the canonical email against the active policy bundle and return signed allow/deny decisions.
@@ -105,7 +105,7 @@ The public certificate endpoint exposes both the certificate summary and a compl
 
 `email_verify_received` accepts the received canonical email fields as a typed object. It also accepts optional `headers` for recipient clients that can access custom mail headers. If `X-Strata-*` headers are supplied, the verifier checks them against the certificate metadata; if they are absent, content/certificate verification still proceeds because some mail APIs hide custom headers.
 
-`gateway_status` exposes protocol/schema versions, including `commitment_schema_version`, so agents can detect the expected canonicalization contract before producing or comparing digests.
+`gateway_status` exposes protocol/schema versions, including `commitment_schema_version`, so agents can detect the expected canonicalization contract before producing or comparing digests. It also reports passive L1 registry authorization checks for signed-request witnesses so a healthy HTTP witness cannot mask an expired gateway/witness authorization window.
 
 `strata.email.commitment.v2` is transit-aware: text/html line endings are canonicalized to CRLF and terminal body line breaks are stripped before hashing. Sender-only `audit_tags` are not part of the recipient-reproducible payload digest, so recipients do not need private sender provenance metadata to verify content.
 

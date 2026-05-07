@@ -20,6 +20,8 @@ import {
   verifyCheckpoint,
   verifySession,
   verifyWitnessAuthority,
+  verifyWitnessRegistryEpoch,
+  witnessRegistryEpochDigest,
   writeCheckpoint
 } from "./primitives.js";
 import { EMAIL_COMMITMENT_VERSION, EMAIL_PAYLOAD_VERSION, canonicalizeEmailInput, emailCommitment } from "../email/canonical.js";
@@ -61,7 +63,7 @@ export async function createActionRegistry(config) {
       {
         name: "gateway_status",
         title: "Check Strata Gateway Status",
-        description: "Check email provider configuration, Level 1 witness health, and Level 2 policy witness health before sending.",
+        description: "Check email provider configuration, Level 1 witness health and registry authorization, and Level 2 policy witness health before sending.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -170,14 +172,15 @@ export function previewEmail(input, config) {
 }
 
 export async function gatewayStatus(config) {
-  const witnessChecks = await Promise.all(config.witnesses.map(checkWitness));
-  const policyWitnessChecks = await Promise.all(config.policyWitnesses.map(checkPolicyWitness));
-  const healthyWitnesses = witnessChecks.filter((witness) => witness.ok).length;
-  const healthyPolicyWitnesses = policyWitnessChecks.filter((witness) => witness.ok).length;
   const requiredWitnesses = config.witness.threshold;
   const requiredPolicyWitnesses = config.policyWitness.threshold;
   const policyBundle = await loadConfiguredPolicyBundle(config);
   const policyUrl = configuredPolicyUrl(config, policyBundle);
+  const policyHash = policyBundleDigest(policyBundle);
+  const witnessChecks = await Promise.all(config.witnesses.map((spec) => checkWitness(spec, config, policyHash)));
+  const policyWitnessChecks = await Promise.all(config.policyWitnesses.map(checkPolicyWitness));
+  const healthyWitnesses = witnessChecks.filter((witness) => witness.ok).length;
+  const healthyPolicyWitnesses = policyWitnessChecks.filter((witness) => witness.ok).length;
   const registry = await safeRegistryStatus(config);
   return {
     status: healthyWitnesses >= requiredWitnesses && healthyPolicyWitnesses >= requiredPolicyWitnesses && config.email.provider ? "ready" : "not_ready",
@@ -1007,20 +1010,28 @@ async function createWitnessClients(specs, keyring, config, gatewaySigner) {
   return witnesses;
 }
 
-async function checkWitness(spec) {
+async function checkWitness(spec, config, policyHash) {
   try {
+    const baseUrl = spec.url.replace(/\/$/, "");
     const [healthResponse, keyResponse] = await Promise.all([
-      fetch(`${spec.url.replace(/\/$/, "")}/health`),
-      fetch(`${spec.url.replace(/\/$/, "")}/v1/public-key`)
+      fetch(`${baseUrl}/health`),
+      fetch(`${baseUrl}/v1/public-key`)
     ]);
     const health = await healthResponse.json();
     const publicKey = await keyResponse.json();
+    const healthOk = healthResponse.ok && Boolean(health.ok);
+    const keyOk = keyResponse.ok && Boolean(publicKey.key_id);
+    const authorization = config.witness.signedRequests.enabled
+      ? await checkL1WitnessAuthorization({ spec, config, policyHash, publicKey, health })
+      : { configured: false, ok: true, mode: "legacy" };
     return {
       id: spec.id,
       url: spec.url,
-      ok: healthResponse.ok && keyResponse.ok && Boolean(publicKey.key_id),
+      ok: healthOk && keyOk && authorization.ok,
+      reachable: healthOk && keyOk,
       health,
-      key_id: publicKey.key_id || null
+      key_id: publicKey.key_id || null,
+      authorization
     };
   } catch (error) {
     return {
@@ -1030,6 +1041,225 @@ async function checkWitness(spec) {
       error: error.message
     };
   }
+}
+
+async function checkL1WitnessAuthorization({ spec, config, policyHash, publicKey, health }) {
+  const registryEpochUrl = l1WitnessRegistryEpochUrl({ spec, config });
+  const registryTrustAnchorsUrl = l1WitnessRegistryTrustAnchorsUrl({ spec, config });
+  const now = new Date();
+  if (!registryEpochUrl || !registryTrustAnchorsUrl) {
+    return {
+      configured: false,
+      ok: false,
+      mode: health?.registry_authority_enabled === false ? "transitional-keyring" : "unknown",
+      errors: ["L1 witness registry epoch URL/trust anchors URL are not configured or derivable"]
+    };
+  }
+
+  try {
+    const [registryResponse, trustAnchorsResponse] = await Promise.all([
+      fetch(registryEpochUrl),
+      fetch(registryTrustAnchorsUrl)
+    ]);
+    const registryEpoch = await registryResponse.json();
+    const trustAnchors = await trustAnchorsResponse.json();
+    const errors = [];
+    const warnings = [];
+    if (!registryResponse.ok) {
+      errors.push(`registry epoch fetch failed: HTTP ${registryResponse.status}`);
+    }
+    if (!trustAnchorsResponse.ok) {
+      errors.push(`registry trust anchors fetch failed: HTTP ${trustAnchorsResponse.status}`);
+    }
+
+    const verification = verifyWitnessRegistryEpoch(registryEpoch, trustAnchors);
+    errors.push(...verification.errors.map((error) => `registry epoch: ${error}`));
+    errors.push(...registryEpochValidityErrors(registryEpoch, now));
+    const registryEpochDigest = witnessRegistryEpochDigest(registryEpoch);
+    if (config.witness.signedRequests.registryEpochId && registryEpoch.epoch_id !== config.witness.signedRequests.registryEpochId) {
+      errors.push(`registry epoch id mismatch: expected ${config.witness.signedRequests.registryEpochId}, got ${registryEpoch.epoch_id}`);
+    }
+
+    const workflowId = config.witness.signedRequests.workflowId;
+    const gateway = (registryEpoch.gateways || []).find((candidate) => candidate.key_id === config.gateway.keyId);
+    const witnessKeyId = publicKey.key_id || null;
+    const witness = (registryEpoch.witnesses || []).find((candidate) => candidate.key_id === witnessKeyId);
+    const gatewayCheck = registryEntryAuthorizationStatus({
+      entry: gateway,
+      label: config.gateway.keyId,
+      kind: "gateway",
+      expectedIdField: "gateway_id",
+      expectedId: config.gateway.id,
+      workflowId,
+      policyHash,
+      now
+    });
+    const witnessCheck = registryEntryAuthorizationStatus({
+      entry: witness,
+      label: witnessKeyId,
+      kind: "witness",
+      expectedIdField: "witness_id",
+      expectedId: spec.id,
+      expectedEpochId: config.witness.signedRequests.witnessEpochId,
+      workflowId,
+      policyHash,
+      now,
+      publicKeyPem: publicKey.public_key_pem
+    });
+    errors.push(...gatewayCheck.errors.map((error) => `gateway: ${error}`));
+    errors.push(...witnessCheck.errors.map((error) => `witness: ${error}`));
+    warnings.push(...gatewayCheck.warnings.map((warning) => `gateway: ${warning}`));
+    warnings.push(...witnessCheck.warnings.map((warning) => `witness: ${warning}`));
+
+    const validUntilValues = [registryEpoch.valid_until, gateway?.valid_until, witness?.valid_until]
+      .filter((value) => isIsoDate(value));
+    const effectiveValidUntil = earliestIso(validUntilValues);
+    return {
+      configured: true,
+      ok: errors.length === 0,
+      registry_epoch_url: registryEpochUrl,
+      registry_trust_anchors_url: registryTrustAnchorsUrl,
+      registry_epoch_id: registryEpoch.epoch_id || null,
+      registry_epoch_digest: registryEpochDigest,
+      expected_registry_epoch_id: config.witness.signedRequests.registryEpochId || null,
+      registry_valid_from: registryEpoch.valid_from || null,
+      registry_valid_until: registryEpoch.valid_until || null,
+      effective_valid_until: effectiveValidUntil,
+      expires_in_seconds: effectiveValidUntil ? Math.floor((new Date(effectiveValidUntil).getTime() - now.getTime()) / 1000) : null,
+      gateway_key_id: config.gateway.keyId,
+      witness_key_id: witnessKeyId,
+      workflow_id: workflowId,
+      policy_hash: policyHash,
+      gateway_authorized: gatewayCheck.ok,
+      witness_authorized: witnessCheck.ok,
+      workflow_authorized: gatewayCheck.workflowAuthorized && witnessCheck.workflowAuthorized,
+      policy_authorized: gatewayCheck.policyAuthorized && witnessCheck.policyAuthorized,
+      errors,
+      warnings
+    };
+  } catch (error) {
+    return {
+      configured: true,
+      ok: false,
+      registry_epoch_url: registryEpochUrl,
+      registry_trust_anchors_url: registryTrustAnchorsUrl,
+      error: error.message,
+      errors: [error.message]
+    };
+  }
+}
+
+function l1WitnessRegistryEpochUrl({ spec, config }) {
+  if (spec.registryEpochUrl) {
+    return spec.registryEpochUrl;
+  }
+  const evidence = l1WitnessEvidenceForSpec({ spec, config });
+  return evidence?.registryEpochUrl || (evidence?.configRepo ? `https://raw.githubusercontent.com/${evidence.configRepo}/main/registry-epoch.json` : "");
+}
+
+function l1WitnessRegistryTrustAnchorsUrl({ spec, config }) {
+  if (spec.registryTrustAnchorsUrl) {
+    return spec.registryTrustAnchorsUrl;
+  }
+  const evidence = l1WitnessEvidenceForSpec({ spec, config });
+  return evidence?.registryTrustAnchorsUrl || (evidence?.configRepo ? `https://raw.githubusercontent.com/${evidence.configRepo}/main/registry-trust-anchors.json` : "");
+}
+
+function l1WitnessEvidenceForSpec({ spec, config }) {
+  return (config.attestation?.l1Witnesses || []).find((item) => item.witnessId === spec.id || item.witnessId === spec.witnessId);
+}
+
+function registryEntryAuthorizationStatus({ entry, label, kind, expectedIdField, expectedId, expectedEpochId = null, workflowId, policyHash, now, publicKeyPem = null }) {
+  const errors = [];
+  const warnings = [];
+  if (!entry) {
+    return {
+      ok: false,
+      errors: [`${kind} key ${label || "unknown"} is not in registry epoch`],
+      warnings,
+      workflowAuthorized: false,
+      policyAuthorized: false
+    };
+  }
+  if (entry[expectedIdField] !== expectedId) {
+    errors.push(`${expectedIdField} mismatch: expected ${expectedId}, got ${entry[expectedIdField]}`);
+  }
+  if (expectedEpochId && entry.witness_epoch_id && entry.witness_epoch_id !== expectedEpochId) {
+    errors.push(`witness_epoch_id mismatch: expected ${expectedEpochId}, got ${entry.witness_epoch_id}`);
+  }
+  if (publicKeyPem && entry.public_key_pem && normalizePem(entry.public_key_pem) !== normalizePem(publicKeyPem)) {
+    errors.push("public key does not match registry entry");
+  }
+  const workflowAuthorized = (entry.authorized_workflows || []).includes(workflowId);
+  if (!workflowAuthorized) {
+    errors.push(`${entry.key_id} is not authorized for workflow ${workflowId}`);
+  }
+  const policyAuthorized = !policyHash || (entry.authorized_policy_hashes || []).includes(policyHash);
+  if (!policyAuthorized) {
+    errors.push(`${entry.key_id} is not authorized for policy ${policyHash}`);
+  }
+  errors.push(...validityErrors(entry, now));
+  if (entry.valid_until) {
+    const expiresInSeconds = Math.floor((new Date(entry.valid_until).getTime() - now.getTime()) / 1000);
+    if (expiresInSeconds > 0 && expiresInSeconds < 7 * 24 * 3600) {
+      warnings.push(`${entry.key_id} authorization expires in ${expiresInSeconds} seconds`);
+    }
+  }
+  return { ok: errors.length === 0, errors, warnings, workflowAuthorized, policyAuthorized };
+}
+
+function validityErrors(entry, now) {
+  const errors = [];
+  const nowMs = now.getTime();
+  if (isIsoDate(entry.valid_from) && nowMs < new Date(entry.valid_from).getTime()) {
+    errors.push(`${entry.key_id} is not valid until ${entry.valid_from}`);
+  }
+  if (isIsoDate(entry.valid_until) && nowMs >= new Date(entry.valid_until).getTime()) {
+    errors.push(`${entry.key_id} authorization expired at ${entry.valid_until}`);
+  }
+  const status = statusAt(entry.status_events || [], now, entry.status || "active");
+  if (status.status !== "active") {
+    errors.push(`${entry.key_id} status is ${status.status}`);
+  }
+  return errors;
+}
+
+function registryEpochValidityErrors(epoch, now) {
+  const errors = [];
+  const nowMs = now.getTime();
+  if (isIsoDate(epoch.valid_from) && nowMs < new Date(epoch.valid_from).getTime()) {
+    errors.push(`registry epoch is not valid until ${epoch.valid_from}`);
+  }
+  if (isIsoDate(epoch.valid_until) && nowMs >= new Date(epoch.valid_until).getTime()) {
+    errors.push(`registry epoch expired at ${epoch.valid_until}`);
+  }
+  return errors;
+}
+
+function statusAt(events, now, fallback) {
+  const nowMs = now.getTime();
+  return [...events]
+    .filter((event) => isIsoDate(event.effective_at) && new Date(event.effective_at).getTime() <= nowMs)
+    .sort((left, right) => new Date(left.effective_at).getTime() - new Date(right.effective_at).getTime())
+    .at(-1) ?? { status: fallback };
+}
+
+function earliestIso(values) {
+  if (values.length === 0) {
+    return null;
+  }
+  return values
+    .map((value) => new Date(value))
+    .sort((left, right) => left.getTime() - right.getTime())[0]
+    .toISOString();
+}
+
+function normalizePem(value) {
+  return String(value || "").replace(/\s+/g, "");
+}
+
+function isIsoDate(value) {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
 
 async function checkPolicyWitness(spec) {
