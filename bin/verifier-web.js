@@ -169,13 +169,13 @@ function indexHtml() {
         { title: 'The witness and registry authority checked out', good: ok('registry') && ok('authority_pins'), text: 'The registry epoch, registry trust anchor, and policy digest matched the pinned values, so the registry host was not treated as the source of authority.' },
         { title: 'The gateway runtime was Tinfoil-attested', good: ok('gateway_attestation'), text: 'The gateway attestation bundle was verified with the published Tinfoil verifier, tying the action gateway to a measured enclave runtime.' },
         { title: 'The L1 witness runtime was Tinfoil-attested', good: ok('l1_attestation'), text: 'The Level 1 mechanical witness attestation bundle was verified, tying the witness signature path to a measured enclave runtime.' },
-        { title: 'Operator admission was authorized', good: ok('operator_registry'), text: 'The operator admission key was checked against the signed operator registry record included in the bundle.' }
+        { title: 'Operator identity was authorized', good: has('operator_identity.version') && ok('operator_identity') && ok('operator_registry'), text: 'The operator admission key was bound to a signed operator registry record that authorized this tenant, workflow, tool, and policy hash.' }
       ];
     }
     function renderClaim(claim) { return '<div class="claim ' + (claim.good ? 'good' : 'bad') + '"><h3>' + (claim.good ? '✓ ' : '× ') + escapeHtml(claim.title) + '</h3><p>' + escapeHtml(claim.text) + '</p></div>'; }
     function groupChecks(checks) { return checks.reduce((acc, check) => { const key = check.name.split('.')[0]; (acc[key] ||= []).push(check); return acc; }, {}); }
     function renderCheck(check) { return '<div class="check"><div><b>' + escapeHtml(check.name) + '</b>' + (check.error ? '<div class="small">' + escapeHtml(check.error) + '</div>' : '') + '</div><strong class="' + check.severity + '">' + check.severity.toUpperCase() + '</strong></div>'; }
-    function title(name) { return ({bundle:'Bundle', certificate:'Certificate', receipts:'Receipts', receipt_chain:'Receipt chain', policy_bundle:'Policy bundle', authority_pins:'Authority pins', registry:'Registry authority', operator_registry:'Operator registry', gateway_attestation:'Gateway Tinfoil attestation', l1_attestation:'L1 Tinfoil attestation'}[name] || name); }
+    function title(name) { return ({bundle:'Bundle', certificate:'Certificate', receipts:'Receipts', receipt_chain:'Receipt chain', policy_bundle:'Policy bundle', authority_pins:'Authority pins', registry:'Registry authority', operator_registry:'Operator registry', operator_identity:'Operator identity', gateway_attestation:'Gateway Tinfoil attestation', l1_attestation:'L1 Tinfoil attestation'}[name] || name); }
     function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
   </script>
 </body>

@@ -178,6 +178,8 @@ The certificate bundle includes `admission_manifest`, and recipient verification
 
 The bundle also includes `operator_registry`, a registry-signed `strata.operator_registry_record.v1` record. Recipient verification checks that the manifest's embedded operator key matches the registry-authorized key for `operator:amotivv-demo` before accepting the operator signature.
 
+New certificates also include an explicit `operator_identity` binding. This is a verifier-facing summary, not a new root of trust: it binds the operator id, tenant id, admission key id, registry record digest, registry authority key id, workflow, tool, policy hash, and active operator status to the signed admission manifest and signed operator registry record.
+
 ## Fly.io
 
 Fly.io is the recommended host for the live demo. Use one MCP app, three L1 witness apps, and three L2 policy witness apps. See `docs/fly-deployment.md` and `deploy/fly/*.toml.example`.

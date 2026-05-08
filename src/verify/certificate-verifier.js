@@ -8,7 +8,10 @@ import {
 } from "../strata/primitives.js";
 import { policyBundleDigest, verifyPolicyQuorumAuthority } from "../policy/email-policy.js";
 import { verifyOperatorRegistryRecord } from "../registry/email-registry.js";
+import { verifyOperatorAdmissionManifest } from "../admission/operator-manifest.js";
 import { Verifier, hashAttestationDocument } from "@tinfoilsh/verifier";
+
+const OPERATOR_IDENTITY_BINDING_VERSION = "strata.operator_identity_binding.v1";
 
 export async function verifyCertificateBundleUrl(bundleUrl) {
   const normalizedUrl = normalizeBundleUrl(bundleUrl);
@@ -113,13 +116,15 @@ export async function verifyCertificateBundle(bundle, { sourceUrl = "" } = {}) {
     const operatorTrust = { [bundle.operator_registry.registry_trust_anchor.key_id]: bundle.operator_registry.registry_trust_anchor.public_key_pem };
     const operatorVerification = verifyOperatorRegistryRecord(bundle.operator_registry.operator_record, operatorTrust);
     add(checks, "operator_registry.signature", operatorVerification.ok, { errors: operatorVerification.errors });
-    add(checks, "operator_registry.digest", digestValue(bundle.operator_registry.operator_record) === certificate.admission?.operator_registry_record_digest, {
-      expected: certificate.admission?.operator_registry_record_digest,
+    const expectedOperatorRecordDigest = certificate.operator_identity?.operator_registry_record_digest || certificate.admission?.operator_registry_record_digest;
+    add(checks, "operator_registry.digest", digestValue(bundle.operator_registry.operator_record) === expectedOperatorRecordDigest, {
+      expected: expectedOperatorRecordDigest,
       actual: digestValue(bundle.operator_registry.operator_record)
     });
   } else {
     add(checks, "operator_registry.artifact_present", false, {});
   }
+  verifyOperatorIdentityBinding(checks, bundle, certificate);
 
   const runtimeVerifications = [];
   runtimeVerifications.push(verifyGatewayAttestation(checks, bundle));
@@ -135,6 +140,7 @@ export async function verifyCertificateBundle(bundle, { sourceUrl = "" } = {}) {
       provider: certificate.provider?.provider,
       provider_message_id: certificate.provider?.provider_message_id,
       action: certificate.action,
+      operator_identity: certificate.operator_identity || null,
       policy: certificate.policy,
       proof: certificate.proof
     },
@@ -166,6 +172,109 @@ export function renderMarkdownReport(report) {
     }
   }
   return `${lines.join("\n")}\n`;
+}
+
+function verifyOperatorIdentityBinding(checks, bundle, certificate) {
+  const binding = certificate.operator_identity;
+  if (!binding) {
+    warn(checks, "operator_identity.present", "Certificate does not include an explicit operator_identity binding; relying on legacy admission/operator_registry bindings.");
+    return;
+  }
+
+  add(checks, "operator_identity.version", binding.version === OPERATOR_IDENTITY_BINDING_VERSION, {
+    expected: OPERATOR_IDENTITY_BINDING_VERSION,
+    actual: binding.version || null
+  });
+
+  const operatorRegistry = bundle.operator_registry || null;
+  const operatorRecord = operatorRegistry?.operator_record || null;
+  const registryTrustAnchor = operatorRegistry?.registry_trust_anchor || null;
+  const admissionManifest = bundle.admission_manifest || null;
+
+  add(checks, "operator_identity.registry_record_present", Boolean(operatorRecord && registryTrustAnchor), {
+    operator_record: Boolean(operatorRecord),
+    registry_trust_anchor: Boolean(registryTrustAnchor)
+  });
+
+  if (admissionManifest) {
+    const admissionVerification = verifyOperatorAdmissionManifest(admissionManifest, {
+      operatorRegistryBinding: operatorRegistry,
+      requireRegistry: true
+    });
+    add(checks, "operator_identity.admission_signature", admissionVerification.ok, { errors: admissionVerification.errors });
+    add(checks, "operator_identity.admission_manifest_digest", binding.admission_manifest_digest === admissionVerification.signed_manifest_digest && certificate.admission?.admission_manifest_digest === admissionVerification.signed_manifest_digest, {
+      expected: binding.admission_manifest_digest,
+      certificate_admission: certificate.admission?.admission_manifest_digest || null,
+      actual: admissionVerification.signed_manifest_digest
+    });
+    add(checks, "operator_identity.operator_id", binding.operator_id === admissionVerification.operator_id, {
+      expected: admissionVerification.operator_id,
+      actual: binding.operator_id || null
+    });
+    add(checks, "operator_identity.tenant_id", binding.tenant_id === admissionVerification.tenant_id, {
+      expected: admissionVerification.tenant_id,
+      actual: binding.tenant_id || null
+    });
+    add(checks, "operator_identity.operator_key", binding.operator_key_id === admissionVerification.operator_key_id && binding.operator_key_id === certificate.admission?.operator_key_id, {
+      expected: admissionVerification.operator_key_id,
+      certificate_admission: certificate.admission?.operator_key_id || null,
+      actual: binding.operator_key_id || null
+    });
+  } else {
+    add(checks, "operator_identity.admission_manifest_present", false, {});
+  }
+
+  if (!operatorRecord) {
+    return;
+  }
+
+  const operatorRecordDigest = digestValue(operatorRecord);
+  add(checks, "operator_identity.registry_record_digest", binding.operator_registry_record_digest === operatorRecordDigest && certificate.admission?.operator_registry_record_digest === operatorRecordDigest, {
+    expected: binding.operator_registry_record_digest,
+    certificate_admission: certificate.admission?.operator_registry_record_digest || null,
+    actual: operatorRecordDigest
+  });
+  add(checks, "operator_identity.registry_authority", binding.registry_authority_key_id === registryTrustAnchor?.key_id, {
+    expected: registryTrustAnchor?.key_id || null,
+    actual: binding.registry_authority_key_id || null
+  });
+  add(checks, "operator_identity.registry_url", binding.operator_registry_url === operatorRegistry?.operator_record_url, {
+    expected: operatorRegistry?.operator_record_url || null,
+    actual: binding.operator_registry_url || null
+  });
+  add(checks, "operator_identity.workflow_authorization", operatorRecord.authorized_workflows?.includes(binding.workflow_id), {
+    workflow_id: binding.workflow_id || null,
+    authorized_workflows: operatorRecord.authorized_workflows || []
+  });
+  add(checks, "operator_identity.tool_authorization", operatorRecord.authorized_tools?.includes(binding.tool_id), {
+    tool_id: binding.tool_id || null,
+    authorized_tools: operatorRecord.authorized_tools || []
+  });
+  add(checks, "operator_identity.policy_authorization", operatorRecord.authorized_policy_hashes?.includes(binding.policy_hash), {
+    policy_hash: binding.policy_hash || null,
+    authorized_policy_hashes: operatorRecord.authorized_policy_hashes || []
+  });
+  const timeErrors = operatorRecordTimeErrors(operatorRecord, binding.admission_signed_at || certificate.issued_at);
+  add(checks, "operator_identity.status_at_action_time", binding.status_at_action_time === "active" && operatorRecord.status === "active" && timeErrors.length === 0, {
+    binding_status: binding.status_at_action_time || null,
+    record_status: operatorRecord.status || null,
+    errors: timeErrors
+  });
+}
+
+function operatorRecordTimeErrors(record, signingTime) {
+  const errors = [];
+  const signedAt = Date.parse(signingTime || "");
+  if (!Number.isFinite(signedAt)) {
+    return ["operator signing time missing or invalid"];
+  }
+  if (record.valid_from && signedAt < Date.parse(record.valid_from)) {
+    errors.push("operator key was not valid yet at signing time");
+  }
+  if (record.valid_until && signedAt > Date.parse(record.valid_until)) {
+    errors.push("operator key expired before signing time");
+  }
+  return errors;
 }
 
 async function verifyGatewayAttestation(checks, bundle) {

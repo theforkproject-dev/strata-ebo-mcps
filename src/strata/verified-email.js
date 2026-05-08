@@ -211,7 +211,8 @@ export async function gatewayStatus(config) {
       operator_id: config.operator.id,
       operator_key_id: config.operator.admissionKeyId,
       manifest_scope: "tenant/default active email.send admission manifest",
-      signature_schema_version: OPERATOR_ADMISSION_SIGNATURE_VERSION
+      signature_schema_version: OPERATOR_ADMISSION_SIGNATURE_VERSION,
+      operator_identity_binding_schema_version: "strata.operator_identity_binding.v1"
     },
     registry,
     policy_witness_signing: policyWitnessSigningSemantics(),
@@ -437,6 +438,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     },
     commitment: publicCommitment,
     admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
+    operator_identity: operatorIdentityCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
     authority_pins: authorityPins(config, registryBinding, policyBundle),
     tinfoil_attestation: tinfoilAttestation,
@@ -492,6 +494,7 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
     policy_quorum: policyQuorum,
     policy_bundle: policyBundleMetadata(policyBundle, policyUrl),
     operator_admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
+    operator_identity: operatorIdentityCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
     registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
@@ -642,6 +645,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     },
     commitment: publicCommitment,
     admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
+    operator_identity: operatorIdentityCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
     authority_pins: authorityPins(config, registryBinding, policyBundle),
     tinfoil_attestation: tinfoilAttestation,
@@ -694,6 +698,7 @@ async function createPolicyDeniedCertificate({ config, requestContext, outDir, p
     policy_quorum: policyQuorum,
     policy_bundle: policyBundleMetadata(policyBundle, policyQuorum.policy_url),
     operator_admission: operatorAdmissionCertificateBinding(admissionManifest, { operatorRegistryBinding }),
+    operator_identity: operatorIdentityCertificateBinding(admissionManifest, { operatorRegistryBinding }),
     registry: registryCertificateBinding(registryBinding),
     registry_authority: registryAuthority,
     policy_witness_signing: policyWitnessSigningSemantics(),
@@ -1625,6 +1630,33 @@ function operatorAdmissionCertificateBindingErrors(certificate, verification) {
     errors.push("operator registry record digest does not match certificate admission binding");
   }
   return errors;
+}
+
+function operatorIdentityCertificateBinding(admissionManifest, { operatorRegistryBinding = null, workflowId = "email.send", toolId = "email_send_verified" } = {}) {
+  const verification = verifyOperatorAdmissionManifest(admissionManifest, { operatorRegistryBinding });
+  const operatorRecord = operatorRegistryBinding?.operator_record || null;
+  return {
+    version: "strata.operator_identity_binding.v1",
+    tenant_id: verification.tenant_id,
+    operator_id: verification.operator_id,
+    operator_key_id: verification.operator_key_id,
+    operator_registry_url: verification.operator_registry_url,
+    operator_registry_record_digest: verification.operator_registry_record_digest,
+    registry_authority_key_id: verification.operator_registry_authority_key_id,
+    admission_manifest_digest: verification.signed_manifest_digest,
+    admission_signed_at: verification.signed_at,
+    workflow_id: workflowId,
+    tool_id: toolId,
+    policy_hash: verification.policy_hash,
+    authorized_workflows: operatorRecord?.authorized_workflows || [],
+    authorized_tools: operatorRecord?.authorized_tools || [],
+    authorized_policy_hashes: operatorRecord?.authorized_policy_hashes || [],
+    status_at_action_time: operatorRecord?.status || null,
+    valid_from: operatorRecord?.valid_from || null,
+    valid_until: operatorRecord?.valid_until || null,
+    registry_authorized: verification.registry_authorized,
+    signature_verified: verification.ok
+  };
 }
 
 async function safeRegistryStatus(config) {

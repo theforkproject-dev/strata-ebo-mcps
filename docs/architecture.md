@@ -77,6 +77,8 @@ Each send or policy-denied attempt creates a signed `turnstile.admission-manifes
 
 The `session.start` receipt commits to the signed admission manifest digest through the existing TURNSTILE `admission_manifest_hash`. Certificates include the admission binding and expose `admission-manifest.json` plus `operator-registry.json` as public artifacts so verifiers can check operator signature, manifest digest binding, policy digest binding, and registry-authorized operator identity.
 
+New certificates also include `operator_identity`, a verifier-facing binding that summarizes the operator id, tenant id, admission key id, operator registry URL and digest, registry authority key id, workflow id, MCP tool id, policy hash, and active status at action time. The binding is not its own authority; verifiers still check it against the signed admission manifest and signed operator registry record.
+
 ## Recipient Verification
 
 `email_verify_received` models the downstream verification loop. A recipient or recipient-side agent provides the received canonical email fields plus a certificate ref. The tool recomputes the digest, verifies the Strata receipt chain/checkpoint, compares the payload digest, and writes a signed verification receipt.

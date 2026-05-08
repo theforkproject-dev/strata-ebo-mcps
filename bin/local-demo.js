@@ -100,7 +100,9 @@ try {
       has_policy_bundle: Boolean(bundle.policy_bundle),
       has_admission_manifest: Boolean(bundle.admission_manifest),
       has_operator_registry: Boolean(bundle.operator_registry),
+      has_operator_identity: Boolean(bundle.certificate.operator_identity),
       operator_admission_signature_verified: bundle.certificate.admission?.signature_verified,
+      operator_identity_signature_verified: bundle.certificate.operator_identity?.signature_verified,
       operator_registry_authorized: bundle.certificate.admission?.registry_authorized,
       policy_url: bundle.certificate.policy.policy_url
     },
