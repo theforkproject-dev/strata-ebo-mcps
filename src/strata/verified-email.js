@@ -21,7 +21,9 @@ import {
   verifySession,
   verifyWitnessAuthority,
   verifyWitnessRegistryEpoch,
+  verifyWitnessRegistryPointer,
   witnessRegistryEpochDigest,
+  witnessRegistryPointerDigest,
   writeCheckpoint
 } from "./primitives.js";
 import { EMAIL_COMMITMENT_VERSION, EMAIL_PAYLOAD_VERSION, canonicalizeEmailInput, emailCommitment } from "../email/canonical.js";
@@ -1044,38 +1046,57 @@ async function checkWitness(spec, config, policyHash) {
 }
 
 async function checkL1WitnessAuthorization({ spec, config, policyHash, publicKey, health }) {
-  const registryEpochUrl = l1WitnessRegistryEpochUrl({ spec, config });
+  const registryPointerUrl = l1WitnessRegistryPointerUrl({ spec, config });
+  let registryEpochUrl = l1WitnessRegistryEpochUrl({ spec, config });
   const registryTrustAnchorsUrl = l1WitnessRegistryTrustAnchorsUrl({ spec, config });
   const now = new Date();
-  if (!registryEpochUrl || !registryTrustAnchorsUrl) {
+  if ((!registryEpochUrl && !registryPointerUrl) || !registryTrustAnchorsUrl) {
     return {
       configured: false,
       ok: false,
       mode: health?.registry_authority_enabled === false ? "transitional-keyring" : "unknown",
-      errors: ["L1 witness registry epoch URL/trust anchors URL are not configured or derivable"]
+      errors: ["L1 witness registry pointer or epoch URL and trust anchors URL are not configured or derivable"]
     };
   }
 
   try {
-    const [registryResponse, trustAnchorsResponse] = await Promise.all([
-      fetch(registryEpochUrl),
-      fetch(registryTrustAnchorsUrl)
-    ]);
-    const registryEpoch = await registryResponse.json();
+    const trustAnchorsResponse = await fetch(registryTrustAnchorsUrl);
     const trustAnchors = await trustAnchorsResponse.json();
     const errors = [];
     const warnings = [];
-    if (!registryResponse.ok) {
-      errors.push(`registry epoch fetch failed: HTTP ${registryResponse.status}`);
-    }
     if (!trustAnchorsResponse.ok) {
       errors.push(`registry trust anchors fetch failed: HTTP ${trustAnchorsResponse.status}`);
+    }
+
+    let registryPointer = null;
+    let pointerDigest = null;
+    let expectedRegistryEpochDigest = l1WitnessRegistryEpochDigest({ spec, config });
+    if (registryPointerUrl) {
+      const pointerResponse = await fetch(registryPointerUrl);
+      registryPointer = await pointerResponse.json();
+      if (!pointerResponse.ok) {
+        errors.push(`registry pointer fetch failed: HTTP ${pointerResponse.status}`);
+      }
+      const pointerVerification = verifyWitnessRegistryPointer(registryPointer, trustAnchors);
+      errors.push(...pointerVerification.errors.map((error) => `registry pointer: ${error}`));
+      pointerDigest = witnessRegistryPointerDigest(registryPointer);
+      registryEpochUrl = registryPointer.registry_epoch_url || registryEpochUrl;
+      expectedRegistryEpochDigest = registryPointer.registry_epoch_digest || expectedRegistryEpochDigest;
+    }
+
+    const registryResponse = await fetch(registryEpochUrl);
+    const registryEpoch = await registryResponse.json();
+    if (!registryResponse.ok) {
+      errors.push(`registry epoch fetch failed: HTTP ${registryResponse.status}`);
     }
 
     const verification = verifyWitnessRegistryEpoch(registryEpoch, trustAnchors);
     errors.push(...verification.errors.map((error) => `registry epoch: ${error}`));
     errors.push(...registryEpochValidityErrors(registryEpoch, now));
     const registryEpochDigest = witnessRegistryEpochDigest(registryEpoch);
+    if (expectedRegistryEpochDigest && registryEpochDigest !== expectedRegistryEpochDigest) {
+      errors.push(`registry epoch digest mismatch: expected=${expectedRegistryEpochDigest} actual=${registryEpochDigest}`);
+    }
     if (config.witness.signedRequests.registryEpochId && registryEpoch.epoch_id !== config.witness.signedRequests.registryEpochId) {
       errors.push(`registry epoch id mismatch: expected ${config.witness.signedRequests.registryEpochId}, got ${registryEpoch.epoch_id}`);
     }
@@ -1117,10 +1138,13 @@ async function checkL1WitnessAuthorization({ spec, config, policyHash, publicKey
     return {
       configured: true,
       ok: errors.length === 0,
+      registry_pointer_url: registryPointerUrl || null,
+      registry_pointer_digest: pointerDigest,
       registry_epoch_url: registryEpochUrl,
       registry_trust_anchors_url: registryTrustAnchorsUrl,
       registry_epoch_id: registryEpoch.epoch_id || null,
       registry_epoch_digest: registryEpochDigest,
+      expected_registry_epoch_digest: expectedRegistryEpochDigest || null,
       expected_registry_epoch_id: config.witness.signedRequests.registryEpochId || null,
       registry_valid_from: registryEpoch.valid_from || null,
       registry_valid_until: registryEpoch.valid_until || null,
@@ -1157,12 +1181,28 @@ function l1WitnessRegistryEpochUrl({ spec, config }) {
   return evidence?.registryEpochUrl || (evidence?.configRepo ? `https://raw.githubusercontent.com/${evidence.configRepo}/main/registry-epoch.json` : "");
 }
 
+function l1WitnessRegistryPointerUrl({ spec, config }) {
+  if (spec.registryPointerUrl) {
+    return spec.registryPointerUrl;
+  }
+  const evidence = l1WitnessEvidenceForSpec({ spec, config });
+  return evidence?.registryPointerUrl || "";
+}
+
 function l1WitnessRegistryTrustAnchorsUrl({ spec, config }) {
   if (spec.registryTrustAnchorsUrl) {
     return spec.registryTrustAnchorsUrl;
   }
   const evidence = l1WitnessEvidenceForSpec({ spec, config });
   return evidence?.registryTrustAnchorsUrl || (evidence?.configRepo ? `https://raw.githubusercontent.com/${evidence.configRepo}/main/registry-trust-anchors.json` : "");
+}
+
+function l1WitnessRegistryEpochDigest({ spec, config }) {
+  if (spec.registryEpochDigest) {
+    return spec.registryEpochDigest;
+  }
+  const evidence = l1WitnessEvidenceForSpec({ spec, config });
+  return evidence?.registryEpochDigest || "";
 }
 
 function l1WitnessEvidenceForSpec({ spec, config }) {

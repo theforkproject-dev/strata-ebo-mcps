@@ -23,8 +23,11 @@ export const {
   verifyEd25519,
   verifyWitnessAuthority,
   verifyWitnessRegistryEpoch,
+  verifyWitnessRegistryPointer,
   witnessRegistryEpochDigest,
+  witnessRegistryPointerDigest,
   WITNESS_REGISTRY_EPOCH_VERSION,
+  WITNESS_REGISTRY_POINTER_VERSION,
   admissionManifestDigest,
   verifySession,
   writeCheckpoint

@@ -169,7 +169,11 @@ function parseL1TinfoilEvidence(env) {
     attestationUrl: env.L1_TINFOIL_ATTESTATION_URL || "",
     attestationRequired: truthy(env.L1_TINFOIL_ATTESTATION_REQUIRED),
     attestationRef: env.L1_TINFOIL_ATTESTATION_REF || "",
-    sigstoreBundleRef: env.L1_TINFOIL_SIGSTORE_BUNDLE_REF || ""
+    sigstoreBundleRef: env.L1_TINFOIL_SIGSTORE_BUNDLE_REF || "",
+    registryEpochUrl: env.L1_WITNESS_REGISTRY_EPOCH_URL || env.WITNESS_REGISTRY_EPOCH_URL || "",
+    registryPointerUrl: env.L1_WITNESS_REGISTRY_POINTER_URL || env.WITNESS_REGISTRY_POINTER_URL || "",
+    registryTrustAnchorsUrl: env.L1_WITNESS_REGISTRY_TRUST_ANCHORS_URL || env.WITNESS_REGISTRY_TRUST_ANCHORS_URL || "",
+    registryEpochDigest: env.L1_WITNESS_REGISTRY_EPOCH_DIGEST || env.WITNESS_REGISTRY_EPOCH_DIGEST || ""
   });
   return item.witnessId ? [item] : [];
 }
@@ -185,7 +189,11 @@ function normalizeL1Evidence(item) {
     attestationUrl: item.attestationUrl || item.attestation_url || "",
     attestationRequired: Boolean(item.attestationRequired || item.attestation_required),
     attestationRef: item.attestationRef || item.attestation_ref || "",
-    sigstoreBundleRef: item.sigstoreBundleRef || item.sigstore_bundle_ref || ""
+    sigstoreBundleRef: item.sigstoreBundleRef || item.sigstore_bundle_ref || "",
+    registryEpochUrl: item.registryEpochUrl || item.registry_epoch_url || "",
+    registryPointerUrl: item.registryPointerUrl || item.registry_pointer_url || "",
+    registryTrustAnchorsUrl: item.registryTrustAnchorsUrl || item.registry_trust_anchors_url || "",
+    registryEpochDigest: item.registryEpochDigest || item.registry_epoch_digest || ""
   };
 }
 
