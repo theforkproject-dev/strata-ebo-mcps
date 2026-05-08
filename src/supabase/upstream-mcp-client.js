@@ -33,6 +33,7 @@ export class SupabaseMcpClient {
           version: "0.1.0"
         }
       });
+      await this.notify("notifications/initialized", {});
     } catch (error) {
       if (!String(error.message || "").includes("Method not found")) {
         throw error;
@@ -41,6 +42,19 @@ export class SupabaseMcpClient {
   }
 
   async rpc(method, params) {
+    return this.sendJsonRpc({
+      jsonrpc: "2.0",
+      id: this.nextId++,
+      method,
+      params
+    }, { expectResult: true });
+  }
+
+  async notify(method, params) {
+    await this.sendJsonRpc({ jsonrpc: "2.0", method, params }, { expectResult: false });
+  }
+
+  async sendJsonRpc(payload, { expectResult }) {
     const credential = await loadSupabaseConnectorCredential(this.config);
     const accessToken = credential.access_token || this.config.supabase.oauth.accessToken;
     if (!accessToken) {
@@ -56,12 +70,7 @@ export class SupabaseMcpClient {
         "mcp-protocol-version": "2025-11-25",
         ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {})
       },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: this.nextId++,
-        method,
-        params
-      })
+      body: JSON.stringify(payload)
     });
 
     const returnedSessionId = response.headers.get("mcp-session-id");
@@ -70,10 +79,13 @@ export class SupabaseMcpClient {
     }
     const body = await readMcpBody(response);
     if (!response.ok) {
-      throw new Error(body?.error?.message || body?.error || `Supabase MCP returned ${response.status}`);
+      throw new Error(upstreamHttpError(response.status, body));
     }
     if (body?.error) {
       throw new Error(body.error.message || JSON.stringify(body.error));
+    }
+    if (!expectResult) {
+      return null;
     }
     return body?.result ?? body;
   }
@@ -103,6 +115,9 @@ export async function refreshSupabaseConnectorCredential(config, { fetchImpl = f
   const form = new URLSearchParams();
   form.set("grant_type", "refresh_token");
   form.set("refresh_token", refreshToken);
+  if (config.supabase.oauth.resource) {
+    form.set("resource", config.supabase.oauth.resource);
+  }
   const tokenAuth = tokenEndpointAuth(config, form);
   const response = await fetchImpl(tokenUrl, {
     method: "POST",
@@ -138,6 +153,11 @@ function normalizeTokenResponse(body) {
     scope: body.scope || "",
     expires_at: expiresIn ? Date.now() + expiresIn * 1000 : null
   };
+}
+
+function upstreamHttpError(status, body) {
+  const details = body ? JSON.stringify(body) : "";
+  return details ? `Supabase MCP returned ${status}: ${details}` : `Supabase MCP returned ${status}`;
 }
 
 function tokenEndpointAuth(config, form) {

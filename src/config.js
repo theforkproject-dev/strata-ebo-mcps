@@ -154,6 +154,7 @@ function loadSupabaseConfig(env, publicBaseUrl, dataDir) {
       authorizationUrl: trimSlash(env.SUPABASE_OAUTH_AUTHORIZATION_URL || ""),
       tokenUrl: trimSlash(env.SUPABASE_OAUTH_TOKEN_URL || ""),
       tokenAuthMethod: env.SUPABASE_OAUTH_TOKEN_AUTH_METHOD || "client_secret_basic",
+      resource: env.SUPABASE_OAUTH_RESOURCE || "",
       redirectUri: oauthRedirectUri,
       scope: env.SUPABASE_OAUTH_SCOPE || "",
       stateSecret: env.SUPABASE_OAUTH_STATE_SECRET || env.MCP_SESSION_SECRET || "",

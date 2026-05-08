@@ -49,6 +49,9 @@ export class SupabaseConnectorOAuth {
     if (this.config.supabase.oauth.scope) {
       authorize.searchParams.set("scope", this.config.supabase.oauth.scope);
     }
+    if (this.config.supabase.oauth.resource) {
+      authorize.searchParams.set("resource", this.config.supabase.oauth.resource);
+    }
     authorize.searchParams.set("state", state);
     response.writeHead(302, { location: authorize.toString(), "cache-control": "no-store" });
     response.end();
@@ -78,6 +81,9 @@ export class SupabaseConnectorOAuth {
     form.set("redirect_uri", this.config.supabase.oauth.redirectUri);
     if (stateCheck.payload.code_verifier) {
       form.set("code_verifier", stateCheck.payload.code_verifier);
+    }
+    if (this.config.supabase.oauth.resource) {
+      form.set("resource", this.config.supabase.oauth.resource);
     }
     const tokenAuth = tokenEndpointAuth(this.config, form);
 
