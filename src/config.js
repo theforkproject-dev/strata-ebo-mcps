@@ -4,8 +4,9 @@ import { randomBytes } from "node:crypto";
 export function loadConfig(env = process.env) {
   loadDotEnv(env);
 
+  const gatewayKind = String(env.STRATA_GATEWAY_KIND || env.GATEWAY_KIND || env.MCP_GATEWAY_KIND || "email").toLowerCase();
   const sessionSecret = env.MCP_SESSION_SECRET || randomBytes(32).toString("hex");
-  const dataDir = env.DATA_DIR || "artifacts/email-mcp";
+  const dataDir = env.DATA_DIR || (gatewayKind === "supabase" ? "artifacts/supabase-mcp" : "artifacts/email-mcp");
   const publicBaseUrl = trimSlash(env.PUBLIC_BASE_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8899"}`);
   const registryUrl = trimSlash(env.REGISTRY_URL || "");
   const registryTrustAnchorPublicKeyPem = env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM
@@ -18,6 +19,7 @@ export function loadConfig(env = process.env) {
   const bundledGateway = gatewayKeyBundle?.gateway ?? null;
 
   return {
+    gatewayKind,
     host: env.HOST || "127.0.0.1",
     port: Number(env.PORT || 8899),
     sessionSecret,
@@ -33,6 +35,7 @@ export function loadConfig(env = process.env) {
       resendApiKey: env.RESEND_API_KEY || "",
       resendBaseUrl: trimSlash(env.RESEND_BASE_URL || "https://api.resend.com")
     },
+    supabase: loadSupabaseConfig(env, publicBaseUrl, dataDir),
     certificateBundle: {
       backend: env.CERTIFICATE_BUNDLE_STORE_BACKEND || "local",
       awsRegion: env.CERTIFICATE_BUNDLE_AWS_REGION || env.AWS_REGION || "",
@@ -78,8 +81,8 @@ export function loadConfig(env = process.env) {
       id: env.TENANT_ID || "default"
     },
     gateway: {
-      id: env.GATEWAY_ID || bundledGateway?.gateway_id || "gateway:email-mcp",
-      keyId: env.GATEWAY_KEY_ID || bundledGateway?.key_id || "gateway:email-mcp",
+      id: env.GATEWAY_ID || bundledGateway?.gateway_id || (gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
+      keyId: env.GATEWAY_KEY_ID || bundledGateway?.key_id || (gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
       keyFile: env.GATEWAY_KEY_FILE || `${dataDir}/keys/gateway.key.json`,
       keyJson: env.GATEWAY_KEY_JSON || "",
       privateKeyPem: env.GATEWAY_PRIVATE_KEY_PEM || bundledGateway?.private_key_pem || "",
@@ -101,7 +104,7 @@ export function loadConfig(env = process.env) {
         enabled: truthy(env.GATEWAY_SIGNED_WITNESS_REQUESTS_ENABLED || env.WITNESS_SIGN_REQUESTS_ENABLED),
         witnessEpochId: env.WITNESS_EPOCH_ID || "",
         registryEpochId: env.REGISTRY_EPOCH_ID || "",
-        workflowId: env.WITNESS_WORKFLOW_ID || "email.send"
+        workflowId: env.WITNESS_WORKFLOW_ID || (gatewayKind === "supabase" ? "supabase.query" : "email.send")
       }
     },
     policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p"),
@@ -121,6 +124,40 @@ export function loadConfig(env = process.env) {
         sigstoreBundleRef: env.GATEWAY_TINFOIL_SIGSTORE_BUNDLE_REF || ""
       },
       l1Witnesses: parseL1TinfoilEvidence(env)
+    }
+  };
+}
+
+function loadSupabaseConfig(env, publicBaseUrl, dataDir) {
+  const readOnlyDefault = env.SUPABASE_MCP_READ_ONLY === undefined ? "true" : env.SUPABASE_MCP_READ_ONLY;
+  const features = parseCsv(env.SUPABASE_MCP_FEATURES || "database,docs");
+  const oauthRedirectUri = trimSlash(env.SUPABASE_OAUTH_REDIRECT_URI || `${publicBaseUrl}/connectors/supabase/oauth/callback`);
+  return {
+    connectorId: env.SUPABASE_CONNECTOR_ID || "supabase-pilot",
+    connectorLabel: env.SUPABASE_CONNECTOR_LABEL || "Supabase Pilot",
+    projectRef: env.SUPABASE_PROJECT_REF || "",
+    readOnly: truthy(readOnlyDefault),
+    features,
+    mcpBaseUrl: trimSlash(env.SUPABASE_MCP_BASE_URL || "https://mcp.supabase.com/mcp"),
+    upstreamCallsEnabled: truthy(env.SUPABASE_ENABLE_UPSTREAM_CALLS || env.SUPABASE_MCP_ENABLE_UPSTREAM_CALLS),
+    evidenceMode: env.SUPABASE_EVIDENCE_MODE || "digest-only",
+    maxRows: positiveInt(env.SUPABASE_QUERY_MAX_ROWS || 100, "SUPABASE_QUERY_MAX_ROWS"),
+    timeoutMs: positiveInt(env.SUPABASE_QUERY_TIMEOUT_MS || 30000, "SUPABASE_QUERY_TIMEOUT_MS"),
+    blockedSchemas: parseCsv(env.SUPABASE_BLOCKED_SCHEMAS || "auth,storage,vault"),
+    blockedTables: parseCsv(env.SUPABASE_BLOCKED_TABLES || ""),
+    oauth: {
+      clientId: env.SUPABASE_OAUTH_CLIENT_ID || "",
+      clientSecret: env.SUPABASE_OAUTH_CLIENT_SECRET || "",
+      accessToken: env.SUPABASE_OAUTH_ACCESS_TOKEN || "",
+      refreshToken: env.SUPABASE_OAUTH_REFRESH_TOKEN || "",
+      issuer: trimSlash(env.SUPABASE_OAUTH_ISSUER || "https://mcp.supabase.com"),
+      authorizationUrl: trimSlash(env.SUPABASE_OAUTH_AUTHORIZATION_URL || ""),
+      tokenUrl: trimSlash(env.SUPABASE_OAUTH_TOKEN_URL || ""),
+      tokenAuthMethod: env.SUPABASE_OAUTH_TOKEN_AUTH_METHOD || "client_secret_basic",
+      redirectUri: oauthRedirectUri,
+      scope: env.SUPABASE_OAUTH_SCOPE || "",
+      stateSecret: env.SUPABASE_OAUTH_STATE_SECRET || env.MCP_SESSION_SECRET || "",
+      storePath: env.SUPABASE_CONNECTOR_STORE_PATH || `${dataDir}/supabase-connector.json`
     }
   };
 }

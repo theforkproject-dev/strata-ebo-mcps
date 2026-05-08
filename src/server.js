@@ -4,15 +4,18 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { EmailMcpServer, MCP_PROTOCOL_VERSION } from "./mcp-server.js";
+import { SupabaseMcpServer } from "./supabase-mcp-server.js";
 import { errorResponse, isNotification, parseJsonRpc, successResponse, validateRequest } from "./jsonrpc.js";
 import { SessionManager } from "./session.js";
 import { OAuthServer } from "./oauth/server.js";
+import { SupabaseConnectorOAuth } from "./supabase/connector-oauth.js";
 import { loadCertificateBundle, loadRecipientVerifications } from "./certificates/bundle.js";
 
 const config = loadConfig();
-const mcp = new EmailMcpServer(config);
+const mcp = config.gatewayKind === "supabase" ? new SupabaseMcpServer(config) : new EmailMcpServer(config);
 const sessions = new SessionManager({ secret: config.sessionSecret });
 const oauthServer = config.oauth.enabled ? new OAuthServer(config) : null;
+const supabaseConnectorOAuth = config.gatewayKind === "supabase" ? new SupabaseConnectorOAuth(config) : null;
 
 if (config.sessionSecretWasGenerated) {
   console.warn("MCP_SESSION_SECRET not set; using an ephemeral development secret for this process.");
@@ -23,12 +26,24 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
       return json(response, 200, {
         ok: true,
-        name: "strata-email-mcp",
-        email_provider: config.email.provider,
+        name: mcp.serverName,
+        gateway_kind: config.gatewayKind,
+        email_provider: config.gatewayKind === "email" ? config.email.provider : undefined,
+        supabase_connector: config.gatewayKind === "supabase" ? {
+          connector_id: config.supabase.connectorId,
+          project_ref_configured: Boolean(config.supabase.projectRef),
+          read_only: config.supabase.readOnly,
+          features: config.supabase.features,
+          upstream_calls_enabled: config.supabase.upstreamCallsEnabled
+        } : undefined,
         witness_count: config.witnesses.length,
         oauth_enabled: Boolean(oauthServer),
         oauth_store_backend: oauthServer ? config.oauth.storeBackend : "disabled"
       });
+    }
+
+    if (supabaseConnectorOAuth?.canHandle(request)) {
+      return await supabaseConnectorOAuth.handle(request, response);
     }
 
     if (oauthServer?.canHandle(request)) {
@@ -54,7 +69,9 @@ server.listen(config.port, config.host, () => {
     ok: true,
     url: `http://${config.host}:${config.port}`,
     mcp_url: `http://${config.host}:${config.port}/mcp`,
-    email_provider: config.email.provider,
+    name: mcp.serverName,
+    gateway_kind: config.gatewayKind,
+    email_provider: config.gatewayKind === "email" ? config.email.provider : undefined,
     witness_count: config.witnesses.length,
     oauth_enabled: Boolean(oauthServer),
     oauth_store_backend: oauthServer ? config.oauth.storeBackend : "disabled"
@@ -72,7 +89,7 @@ async function handleMcp(request, response) {
   }
 
   if (request.method === "GET") {
-    return json(response, 200, { name: "strata-email-mcp", version: "0.1.0" });
+    return json(response, 200, { name: mcp.serverName, version: "0.1.0" });
   }
 
   if (request.method === "DELETE") {
@@ -87,9 +104,9 @@ async function handleMcp(request, response) {
 
   const auth = await authenticate(request);
   if (!auth.ok) {
-    const authenticate = oauthServer
-      ? `Bearer resource_metadata="${config.oauth.issuer}/.well-known/oauth-protected-resource", scope="mcp:read mcp:write"`
-      : 'Bearer realm="strata-email-mcp", scope="mcp:read mcp:write"';
+      const authenticate = oauthServer
+        ? `Bearer resource_metadata="${config.oauth.issuer}/.well-known/oauth-protected-resource", scope="mcp:read mcp:write"`
+        : `Bearer realm="${mcp.serverName}", scope="mcp:read mcp:write"`;
     response.writeHead(401, {
       "www-authenticate": authenticate
     });
@@ -242,7 +259,10 @@ function serveCertificateArtifact(response, runDir, artifactName) {
     "policy-bundle.json": { path: "policy-bundle.json", type: "application/json" },
     "registry-epoch.json": { path: "registry-epoch.json", type: "application/json" },
     "gateway-attestation.json": { path: "gateway-attestation.json", type: "application/json" },
-    "l1-witness-attestations.json": { path: "l1-witness-attestations.json", type: "application/json" }
+    "l1-witness-attestations.json": { path: "l1-witness-attestations.json", type: "application/json" },
+    "connector-manifest.json": { path: "connector-manifest.json", type: "application/json" },
+    "supabase-request.json": { path: "supabase-request.json", type: "application/json" },
+    "supabase-result-metadata.json": { path: "supabase-result-metadata.json", type: "application/json" }
   };
   const artifact = artifactMap[artifactName];
   if (!artifact) {

@@ -1,6 +1,6 @@
-# Strata Email MCP Demo
+# Strata MCP Gateways
 
-This project demonstrates an MCP server whose ordinary email capability is gated by the Strata Verified Action Gateway.
+This project demonstrates MCP servers whose ordinary tool capabilities are gated by the Strata Verified Action Gateway. The original implementation is the Verified Email gateway; the Supabase MCP governance proxy is now scaffolded as a second gateway mode.
 
 Core claim:
 
@@ -152,6 +152,61 @@ The flow supports Dynamic Client Registration, PKCE S256 authorization code exch
 OAuth clients, authorization codes, access tokens, and refresh tokens can be persisted to a local JSON file with `OAUTH_STORE_BACKEND=file` and `OAUTH_STORE_PATH`, or to DynamoDB with `OAUTH_STORE_BACKEND=dynamodb` and the `OAUTH_DYNAMODB_*` settings.
 
 The live Tinfoil gateway uses DynamoDB so Claude Desktop remains connected across gateway redeploys. Authorization codes, access tokens, and refresh tokens use SHA-256-derived DynamoDB keys and omit raw token/code values from stored item attributes. The default refresh-token TTL is seven days.
+
+## Supabase MCP Governance Proxy
+
+Set `STRATA_GATEWAY_KIND=supabase` to run the Supabase MCP governance proxy scaffold instead of the email gateway.
+
+Phase 1 defaults:
+
+- One gateway instance is bound to one Supabase `project_ref`.
+- `SUPABASE_MCP_READ_ONLY=true` is required for the pilot.
+- `SUPABASE_MCP_FEATURES=database,docs` narrows the upstream Supabase MCP tool groups.
+- The assistant connects only to Strata MCP; it should not also have direct Supabase MCP access.
+- Supabase credentials are connector credentials, not assistant credentials.
+
+Example local scaffold configuration:
+
+```ini
+STRATA_GATEWAY_KIND=supabase
+DATA_DIR=artifacts/supabase-mcp
+SUPABASE_CONNECTOR_ID=partner-supabase-pilot
+SUPABASE_PROJECT_REF=your-project-ref
+SUPABASE_MCP_READ_ONLY=true
+SUPABASE_MCP_FEATURES=database,docs
+SUPABASE_ENABLE_UPSTREAM_CALLS=false
+```
+
+Curated tools exposed to the assistant:
+
+- `gateway_status`
+- `supabase.list_tables_verified`
+- `supabase.inspect_schema_verified`
+- `supabase.query_readonly_verified`
+- `supabase.search_docs`
+
+The connector OAuth install endpoints are:
+
+- `/connectors/supabase/oauth/start`
+- `/connectors/supabase/oauth/callback`
+
+The Supabase manual OAuth app callback URL should be:
+
+```text
+https://<gateway-origin>/connectors/supabase/oauth/callback
+```
+
+Set these only through Tinfoil secrets, a durable credential store, or a local gitignored environment during development:
+
+```ini
+SUPABASE_OAUTH_CLIENT_ID=...
+SUPABASE_OAUTH_CLIENT_SECRET=...
+SUPABASE_OAUTH_AUTHORIZATION_URL=...
+SUPABASE_OAUTH_TOKEN_URL=...
+SUPABASE_OAUTH_TOKEN_AUTH_METHOD=client_secret_basic
+```
+
+`SUPABASE_ENABLE_UPSTREAM_CALLS=false` keeps the gateway in no-side-effect scaffold mode. In that mode, policy and certificate artifacts are produced, but no call is made to Supabase MCP. Set it to `true` only after connector OAuth credentials and partner project scope are confirmed.
 
 ## Governance Policy Bundle
 

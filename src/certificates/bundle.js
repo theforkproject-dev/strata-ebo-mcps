@@ -3,18 +3,19 @@ import { join } from "node:path";
 
 export function loadCertificateBundle({ config, runId, runDir, bundleUrl = "", durablePublication = null, recipientVerifications = [] }) {
   const certificate = readJson(join(runDir, "certificate.json"));
+  const isSupabase = String(certificate.version || "").startsWith("strata.supabase.");
   return {
-    version: "strata.email.certificate_bundle.v1",
+    version: isSupabase ? "strata.supabase.certificate_bundle.v1" : "strata.email.certificate_bundle.v1",
     run_id: runId,
     bundle_url: bundleUrl || `${config.certificateBaseUrl}/${runId}/bundle`,
     gateway_bundle_url: `${config.certificateBaseUrl}/${runId}/bundle`,
     durable_publication: durablePublication,
     certificate,
     receipts: readJsonl(join(runDir, "receipts.jsonl")),
-    keyring: readJson(join(runDir, "keyring.json")),
-    checkpoint: readJson(join(runDir, "checkpoint.json")),
+    keyring: readOptionalJson(join(runDir, "keyring.json")),
+    checkpoint: readOptionalJson(join(runDir, "checkpoint.json")),
     transparency_log: readJsonl(join(runDir, "transparency-log.jsonl")),
-    verification: readJson(join(runDir, "verification.json")),
+    verification: readOptionalJson(join(runDir, "verification.json")),
     admission_manifest: readOptionalJson(join(runDir, "admission-manifest.json")),
     operator_registry: readOptionalJson(join(runDir, "operator-registry.json")),
     policy_decision: readOptionalJson(join(runDir, "policy-decision.json")),
@@ -22,6 +23,9 @@ export function loadCertificateBundle({ config, runId, runDir, bundleUrl = "", d
     registry_epoch: readOptionalJson(join(runDir, "registry-epoch.json")),
     gateway_attestation: readOptionalJson(join(runDir, "gateway-attestation.json")),
     l1_witness_attestations: readOptionalJson(join(runDir, "l1-witness-attestations.json")),
+    connector_manifest: readOptionalJson(join(runDir, "connector-manifest.json")),
+    supabase_request: readOptionalJson(join(runDir, "supabase-request.json")),
+    supabase_result_metadata: readOptionalJson(join(runDir, "supabase-result-metadata.json")),
     recipient_verifications: recipientVerifications
   };
 }

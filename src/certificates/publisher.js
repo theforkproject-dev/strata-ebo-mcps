@@ -9,7 +9,8 @@ export function createDurableBundleLocation(config, { runId, certificateDigest, 
   if (!config.certificateBundle.s3Bucket || !publicBase) {
     throw new Error("CERTIFICATE_BUNDLE_S3_BUCKET and CERTIFICATE_BUNDLE_PUBLIC_BASE are required for s3-cloudfront bundle publication");
   }
-  const keyWithoutPrefix = `email/${runId}/${certificateDigest}/bundle.json`;
+  const scope = config.gatewayKind === "supabase" ? "supabase" : "email";
+  const keyWithoutPrefix = `${scope}/${runId}/${certificateDigest}/bundle.json`;
   const key = `${prefix}/${keyWithoutPrefix}`;
   return {
     version: "strata.certificate_bundle_publication.v1",

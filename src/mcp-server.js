@@ -6,6 +6,8 @@ export const MCP_PROTOCOL_VERSION = "2025-11-25";
 export class EmailMcpServer {
   constructor(config) {
     this.config = config;
+    this.serverName = "strata-email-mcp";
+    this.serverTitle = "Strata Verified Email MCP Server";
     this.actionRegistryPromise = null;
     this.latestCertificate = null;
     this.latestRecipientVerification = null;
@@ -40,8 +42,8 @@ export class EmailMcpServer {
         resources: { listChanged: false }
       },
       serverInfo: {
-        name: "strata-email-mcp",
-        title: "Strata Verified Email MCP Server",
+        name: this.serverName,
+        title: this.serverTitle,
         version: "0.1.0"
       },
       instructions: "Use tools/list to discover gateway_status, email_preview, email_send_verified, and email_verify_received. email_send_verified is gated by Strata Level 1 mechanical witnesses and Level 2 policy witnesses.",
