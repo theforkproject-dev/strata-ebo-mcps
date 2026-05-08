@@ -135,10 +135,11 @@ function indexHtml() {
     <p class="lede">Paste a Strata certificate or bundle URL. This verifier runs outside Claude Desktop and outside the gateway, then checks the certificate, receipt chain, policy quorum, registry authority, and Tinfoil attestations.</p>
     <section class="card intro">
       <h2>Why this matters</h2>
-      <p>This certificate proves an AI agent did not merely claim it sent an email. It proves the action was authorized, policy-checked, witnessed by a quorum, executed by an attested gateway, and packaged into durable evidence that can be checked later.</p>
+      <p>This certificate proves an AI agent did not merely claim it sent an email. The action path itself was policy-gated before execution, then witnessed, executed by an attested gateway, and packaged into durable evidence that can be checked later.</p>
       <div class="intro-grid">
         <div class="intro-card"><b>Action integrity</b><span>The email action and provider result are bound into a signed receipt chain.</span></div>
-        <div class="intro-card"><b>Witnessed execution</b><span>A Tinfoil L1 quorum notarizes the action path before and after the side effect.</span></div>
+        <div class="intro-card"><b>Policy enforcement</b><span>The gateway can only mint the side-effect capability after signed policy-witness approval.</span></div>
+        <div class="intro-card"><b>Witnessed execution</b><span>A Tinfoil L1 quorum notarizes the enforced action path before and after the side effect.</span></div>
         <div class="intro-card"><b>Operator legitimacy</b><span>The operator key is checked against a signed registry record and policy scope.</span></div>
         <div class="intro-card"><b>Durable evidence</b><span>The complete bundle is published as a no-overwrite object for later audit.</span></div>
       </div>
@@ -235,7 +236,7 @@ function indexHtml() {
       return [
         { title: 'The certificate was not tampered with', good: has('certificate.digest'), text: 'The verifier recomputed the certificate digest and matched it against the digest carried in the bundle.' },
         { title: 'The action followed the receipt chain', good: ok('receipt_chain'), text: 'The session receipts and checkpoint form a valid signed chain, so the recorded action flow is internally consistent.' },
-        { title: 'The policy decision matched signed rules', good: ok('policy_bundle') && ok('registry.l2'), text: 'The policy bundle digest matched the certificate, and the Level 2 policy witnesses authorized the email under that policy.' },
+        { title: 'The action was policy-enforced before execution', good: ok('policy_bundle') && ok('registry.l2'), text: 'The policy bundle digest matched the certificate, and Level 2 witnesses authorized this exact email before the gateway minted the side-effect capability.' },
         { title: 'The L1 quorum checked out', good: ok('registry.l1') && ok('l1_attestation'), text: 'The certificate satisfied ' + l1Quorum + ' mechanical witness authorization, and each included Tinfoil witness attestation verified independently.' },
         { title: 'The registry authority checked out', good: ok('registry') && ok('authority_pins'), text: 'The registry epoch, registry trust anchor, and policy digest matched the pinned values, so the registry host was not treated as the source of authority.' },
         { title: 'The gateway runtime was Tinfoil-attested', good: ok('gateway_attestation'), text: 'The gateway attestation bundle was verified with the published Tinfoil verifier, tying the action gateway to a measured enclave runtime.' },
@@ -289,19 +290,26 @@ function pilotHtml() {
   <main>
     <nav class="topnav"><a href="/">Verifier</a><a href="/pilot">Pilot overview</a></nav>
     <h1>Verified Email Pilot Overview</h1>
-    <p class="lede">Strata turns an AI side effect into a replayable evidence bundle. A reviewer can verify what happened later without trusting Claude Desktop, the gateway UI, or the operator's logs.</p>
+    <p class="lede">Strata turns an AI side effect into a policy-enforced action path and a replayable evidence bundle. A reviewer can verify both that the action was allowed before execution and what happened afterward.</p>
 
     <section class="card">
       <h2>The Problem</h2>
-      <p>AI agents increasingly take actions in the real world: send emails, approve workflows, update records, or trigger payments. A normal log can say an action happened, but it does not prove the action was authorized, policy-compliant, witnessed, and executed by the expected runtime.</p>
-      <p class="callout">The pilot asks a narrower question: can we produce a durable certificate that lets an outside reviewer verify one real AI-sent email end to end?</p>
+      <p>AI agents increasingly take actions in the real world: send emails, approve workflows, update records, or trigger payments. A normal log can say an action happened, but after-the-fact reporting is not enough for governed side effects.</p>
+      <p>The stronger requirement is enforcement: the action channel should require policy approval before the provider call, and then produce evidence that the enforced path was followed.</p>
+      <p class="callout">The pilot asks a narrower question: can we require policy and witness approval for one real AI-sent email, then produce a durable certificate that lets an outside reviewer verify the full path end to end?</p>
+    </section>
+
+    <section class="card">
+      <h2>Enforcement, Not Just Logging</h2>
+      <p>Strata is not only a black-box recorder for AI actions. The gateway commits to the intended action, obtains signed Level 2 policy-witness approval, and only then mints a single-use capability for the exact side effect. The side-effect adapter requires that capability before it calls the provider.</p>
+      <p>The certificate is the proof that this enforced path was followed. If the policy witnesses do not approve, or if the registry does not authorize the witnesses/operator, the certified action should fail before the side-effect path completes.</p>
     </section>
 
     <section class="card">
       <h2>What The Golden Bundle Demonstrates</h2>
       <div class="grid">
         <div class="claim"><b>Real action</b><span>Claude Desktop invoked a remote MCP tool, and the gateway sent a real email through Resend.</span></div>
-        <div class="claim"><b>Policy gate</b><span>Level 2 policy witnesses checked the email against the signed policy bundle before the side-effect capability was minted.</span></div>
+        <div class="claim"><b>Policy enforcement</b><span>Level 2 policy witnesses checked the email against the signed policy bundle before the side-effect capability was minted.</span></div>
         <div class="claim"><b>Mechanical quorum</b><span>A 2-of-3 Level 1 Tinfoil witness quorum notarized the action path around the side effect.</span></div>
         <div class="claim"><b>Attested runtimes</b><span>The gateway and all three L1 witnesses include Tinfoil evidence verified with Tinfoil's official verifier.</span></div>
         <div class="claim"><b>Operator legitimacy</b><span>The operator admission key is bound to a signed registry record authorizing this tenant, workflow, tool, and policy hash.</span></div>
@@ -324,7 +332,7 @@ function pilotHtml() {
       <h2>How To Read The Verifier</h2>
       <div class="grid">
         <div class="claim"><b>Proof snapshot</b><span>The high-level summary: L1 quorum, L2 quorum, operator, registry digest, gateway release, and durable publication.</span></div>
-        <div class="claim"><b>What this proves</b><span>Plain-English claims derived from the technical checks. These are not separate trust assumptions.</span></div>
+        <div class="claim"><b>What this proves</b><span>Plain-English claims derived from the technical checks, including both pre-execution policy enforcement and after-the-fact evidence.</span></div>
         <div class="claim"><b>Grouped checks</b><span>The raw verification surface. This is where auditors can inspect exact pass/warn/fail details.</span></div>
         <div class="claim"><b>Raw report</b><span>Machine-readable JSON output for downstream audit tooling or independent review.</span></div>
       </div>
