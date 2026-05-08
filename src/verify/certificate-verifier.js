@@ -80,6 +80,7 @@ export async function verifyCertificateBundle(bundle, { sourceUrl = "" } = {}) {
   add(checks, "authority_pins.registry_epoch", certificate.authority_pins?.registry_epoch?.matched === true, certificate.authority_pins?.registry_epoch || {});
   add(checks, "authority_pins.registry_trust_anchor", certificate.authority_pins?.registry_trust_anchor?.matched === true, certificate.authority_pins?.registry_trust_anchor || {});
   add(checks, "authority_pins.policy_bundle", certificate.authority_pins?.policy_bundle?.matched === true, certificate.authority_pins?.policy_bundle || {});
+  verifyDurablePublication(checks, bundle, sourceUrl);
 
   if (registryEpoch && registryTrustAnchor) {
     const trustAnchors = { [registryTrustAnchor.key_id]: registryTrustAnchor.public_key_pem };
@@ -141,9 +142,12 @@ export async function verifyCertificateBundle(bundle, { sourceUrl = "" } = {}) {
       provider_message_id: certificate.provider?.provider_message_id,
       action: certificate.action,
       operator_identity: certificate.operator_identity || null,
+      registry: certificate.registry || null,
       policy: certificate.policy,
-      proof: certificate.proof
+      proof: certificate.proof,
+      durable_publication: bundle.durable_publication || null
     },
+    evidence: buildEvidenceSummary(bundle, certificate),
     checks
   });
 }
@@ -157,6 +161,10 @@ export function renderMarkdownReport(report) {
     `- Certificate: ${report.certificate?.url || "missing"}`,
     `- Digest: ${report.certificate?.digest || "missing"}`,
     `- Summary: ${report.summary.pass} pass, ${report.summary.warn} warn, ${report.summary.fail} fail`,
+    `- L1 quorum: ${report.evidence?.l1?.quorum || "unknown"}`,
+    `- L1 witnesses: ${report.evidence?.l1?.witness_count ?? 0}`,
+    `- Operator: ${report.evidence?.operator?.operator_id || "unknown"}`,
+    `- Durable bundle: ${report.evidence?.durable_publication?.bundle_url || "not published"}`,
     "",
     "## Checks",
     ""
@@ -172,6 +180,102 @@ export function renderMarkdownReport(report) {
     }
   }
   return `${lines.join("\n")}\n`;
+}
+
+function verifyDurablePublication(checks, bundle, sourceUrl) {
+  const publication = bundle.durable_publication;
+  if (!publication) {
+    warn(checks, "durable_publication.present", "No durable publication metadata is included; local or legacy gateway bundles may still verify but are not durable evidence URLs.");
+    return;
+  }
+  add(checks, "durable_publication.present", true, {
+    backend: publication.backend || null,
+    scope: publication.scope || null,
+    bundle_url: publication.bundle_url || null
+  });
+  add(checks, "durable_publication.complete_bundle_only", publication.scope === "complete_bundle_only", {
+    expected: "complete_bundle_only",
+    actual: publication.scope || null
+  });
+  add(checks, "durable_publication.no_overwrite", publication.no_overwrite === true, {
+    no_overwrite: publication.no_overwrite === true,
+    retention_mode: publication.retention_mode || null
+  });
+  if (sourceUrl && publication.bundle_url) {
+    add(checks, "durable_publication.source_url", normalizeBundleUrl(publication.bundle_url) === sourceUrl, {
+      expected: normalizeBundleUrl(publication.bundle_url),
+      actual: sourceUrl
+    });
+  }
+}
+
+function buildEvidenceSummary(bundle, certificate) {
+  const l1Witnesses = certificate.tinfoil_attestation?.l1_witnesses || [];
+  const observedL1 = bundle.l1_witness_attestations?.witnesses || [];
+  const gateway = certificate.tinfoil_attestation?.gateway || null;
+  return {
+    action: {
+      tool: certificate.action?.mcp_tool_name || null,
+      provider: certificate.provider?.provider || null,
+      provider_message_id: certificate.provider?.provider_message_id || null,
+      provider_status: certificate.provider?.provider_status || null,
+      side_effect_executed: !certificate.denied && certificate.proof?.verified === true
+    },
+    l1: {
+      quorum: certificate.proof?.mechanical_witness_quorum || null,
+      witness_count: l1Witnesses.length,
+      observed_attestation_count: observedL1.length,
+      distinct_config_repos: new Set(l1Witnesses.map((witness) => witness.config_repo).filter(Boolean)).size,
+      witnesses: l1Witnesses.map((witness) => ({
+        witness_id: witness.witness_id || witness.container_name || null,
+        config_repo: witness.config_repo || null,
+        config_tag: witness.config_tag || null,
+        release_digest: witness.observed_attestation?.release_digest || witness.attestation_digest || null,
+        attestation_digest: witness.attestation_digest || null,
+        attestation_url: witness.attestation_ref || null,
+        debug_mode: witness.debug_mode === true
+      }))
+    },
+    l2: {
+      policy_decision: certificate.policy?.decision || null,
+      policy_witness_quorum: certificate.policy?.policy_witness_quorum || null,
+      policy_epoch_id: certificate.policy?.policy_epoch_id || null,
+      policy_bundle_digest: certificate.policy?.policy_bundle_digest || null
+    },
+    gateway: gateway ? {
+      container_name: gateway.container_name || null,
+      config_repo: gateway.config_repo || null,
+      config_tag: gateway.config_tag || null,
+      image_digest: gateway.image_digest || null,
+      release_digest: gateway.observed_attestation?.release_digest || gateway.attestation_digest || null,
+      attestation_digest: gateway.attestation_digest || null,
+      debug_mode: gateway.debug_mode === true
+    } : null,
+    operator: certificate.operator_identity ? {
+      operator_id: certificate.operator_identity.operator_id || null,
+      tenant_id: certificate.operator_identity.tenant_id || null,
+      operator_key_id: certificate.operator_identity.operator_key_id || null,
+      workflow_id: certificate.operator_identity.workflow_id || null,
+      tool_id: certificate.operator_identity.tool_id || null,
+      status_at_action_time: certificate.operator_identity.status_at_action_time || null,
+      registry_authorized: certificate.operator_identity.registry_authorized === true,
+      signature_verified: certificate.operator_identity.signature_verified === true
+    } : null,
+    registry: certificate.registry ? {
+      registry_epoch_id: certificate.registry.registry_epoch_id || null,
+      registry_epoch_digest: certificate.registry.registry_epoch_digest || null,
+      registry_authority_key_id: certificate.registry.registry_authority_key_id || null,
+      policy_bundle_digest: certificate.registry.policy_bundle_digest || null
+    } : null,
+    durable_publication: bundle.durable_publication ? {
+      backend: bundle.durable_publication.backend || null,
+      scope: bundle.durable_publication.scope || null,
+      bundle_url: bundle.durable_publication.bundle_url || null,
+      key: bundle.durable_publication.key || null,
+      retention_mode: bundle.durable_publication.retention_mode || null,
+      no_overwrite: bundle.durable_publication.no_overwrite === true
+    } : null
+  };
 }
 
 function verifyOperatorIdentityBinding(checks, bundle, certificate) {
@@ -372,13 +476,14 @@ function warn(checks, name, message) {
   checks.push({ name, ok: true, severity: "warn", message });
 }
 
-function result({ sourceUrl, certificate, checks }) {
+function result({ sourceUrl, certificate, evidence = null, checks }) {
   const failed = checks.filter((check) => check.severity === "fail");
   const warnings = checks.filter((check) => check.severity === "warn");
   return {
     ok: failed.length === 0,
     source_url: sourceUrl,
     certificate,
+    evidence,
     summary: {
       pass: checks.filter((check) => check.severity === "pass").length,
       warn: warnings.length,

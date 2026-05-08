@@ -86,6 +86,13 @@ function indexHtml() {
     .metric { border:1px solid var(--line); border-radius:12px; padding:12px; }
     .metric b { display:block; font-size:24px; }
     .metric span { color:var(--muted); font-size:13px; }
+    .facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:14px; }
+    .fact { border:1px solid var(--line); border-radius:12px; padding:12px; background:rgb(127 127 127 / .035); min-width:0; }
+    .fact b { display:block; font-size:13px; color:var(--muted); margin-bottom:4px; }
+    .fact code { overflow-wrap:anywhere; }
+    .witnesses { display:grid; gap:10px; margin-top:14px; }
+    .witness { border:1px solid var(--line); border-radius:12px; padding:12px; }
+    .witness strong { display:block; margin-bottom:4px; }
     .explain { display:grid; gap:14px; }
     .claim { border:1px solid var(--line); border-radius:14px; padding:16px; background:rgb(127 127 127 / .045); }
     .claim h3 { margin:0 0 6px; font-size:17px; }
@@ -102,7 +109,7 @@ function indexHtml() {
     .check:first-child { border-top:0; }
     .pass { color:var(--ok); } .fail { color:var(--bad); } .warn { color:var(--warn); }
     .small { color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
-    @media (max-width:760px) { form { grid-template-columns:1fr; } button { height:48px; } .grid { grid-template-columns:1fr; } h1 { font-size:34px; } }
+     @media (max-width:760px) { form { grid-template-columns:1fr; } button { height:48px; } .grid, .facts { grid-template-columns:1fr; } h1 { font-size:34px; } }
   </style>
 </head>
 <body>
@@ -146,6 +153,7 @@ function indexHtml() {
         '<div class="grid"><div class="metric"><b>' + (report.summary?.pass ?? 0) + '</b><span>checks passed</span></div><div class="metric"><b>' + (report.summary?.warn ?? 0) + '</b><span>warnings</span></div><div class="metric"><b>' + (report.summary?.fail ?? 0) + '</b><span>failures</span></div></div>' +
         '<p class="story">' + escapeHtml(narrative(report)) + '</p>' +
         '<div class="small" style="margin-top:14px">Certificate digest: <code>' + escapeHtml(report.certificate?.digest || '') + '</code></div></div>' +
+        renderProofSnapshot(report) +
         '<div class="card"><h2>What this proves</h2><div class="explain">' + explanationCards(report).map(renderClaim).join('') + '</div></div>' +
         Object.entries(groups).map(([name, checks]) => '<div class="card"><details open><summary>' + escapeHtml(title(name)) + '</summary>' + checks.map(renderCheck).join('') + '</details></div>').join('') +
         '<div class="card"><details><summary>Raw verifier report</summary><pre>' + escapeHtml(JSON.stringify(report, null, 2)) + '</pre></details></div>';
@@ -159,23 +167,58 @@ function indexHtml() {
       const action = report.certificate?.action?.mcp_tool_name || 'the MCP tool';
       return 'This verifier independently checked that an authenticated MCP client invoked ' + action + ', the gateway executed a ' + provider + ' side effect, and the resulting evidence bundle is internally consistent and externally witnessed.';
     }
+    function renderProofSnapshot(report) {
+      const e = report.evidence || {};
+      const l1 = e.l1 || {};
+      const l2 = e.l2 || {};
+      const operator = e.operator || {};
+      const registry = e.registry || {};
+      const durable = e.durable_publication || {};
+      const gateway = e.gateway || {};
+      const facts = [
+        ['L1 quorum', l1.quorum || 'unknown'],
+        ['L1 Tinfoil witnesses', String(l1.witness_count ?? 0) + ' total, ' + String(l1.distinct_config_repos ?? 0) + ' config repos'],
+        ['L2 policy quorum', l2.policy_witness_quorum || 'unknown'],
+        ['Operator', operator.operator_id || 'unknown'],
+        ['Email registry epoch', registry.registry_epoch_id || 'unknown'],
+        ['Registry digest', registry.registry_epoch_digest || 'unknown'],
+        ['Gateway release', gateway.config_tag || 'unknown'],
+        ['Durable publication', durable.backend ? durable.backend + ', ' + (durable.retention_mode || 'no retention metadata') : 'not included']
+      ];
+      return '<div class="card"><h2>Proof snapshot</h2>' +
+        '<div class="facts">' + facts.map(([label, value]) => '<div class="fact"><b>' + escapeHtml(label) + '</b><code>' + escapeHtml(value) + '</code></div>').join('') + '</div>' +
+        renderWitnesses(l1.witnesses || []) +
+        (durable.bundle_url ? '<div class="small" style="margin-top:14px">Durable bundle URL: <code>' + escapeHtml(durable.bundle_url) + '</code></div>' : '') +
+        '</div>';
+    }
+    function renderWitnesses(witnesses) {
+      if (!witnesses.length) return '';
+      return '<h3 style="margin:18px 0 8px">L1 witness attestations</h3><div class="witnesses">' + witnesses.map((witness) =>
+        '<div class="witness"><strong>' + escapeHtml(witness.witness_id || 'unknown witness') + '</strong>' +
+        '<div class="small">Repo: <code>' + escapeHtml(witness.config_repo || '') + '</code></div>' +
+        '<div class="small">Tag: <code>' + escapeHtml(witness.config_tag || '') + '</code></div>' +
+        '<div class="small">Release digest: <code>' + escapeHtml(witness.release_digest || '') + '</code></div>' +
+        '</div>').join('') + '</div>';
+    }
     function explanationCards(report) {
       const ok = (prefix) => (report.checks || []).filter((check) => check.name.startsWith(prefix)).every((check) => check.severity !== 'fail');
       const has = (name) => (report.checks || []).find((check) => check.name === name && check.ok);
+      const l1Quorum = report.evidence?.l1?.quorum || 'the configured L1 quorum';
       return [
         { title: 'The certificate was not tampered with', good: has('certificate.digest'), text: 'The verifier recomputed the certificate digest and matched it against the digest carried in the bundle.' },
         { title: 'The action followed the receipt chain', good: ok('receipt_chain'), text: 'The session receipts and checkpoint form a valid signed chain, so the recorded action flow is internally consistent.' },
         { title: 'The policy decision matched signed rules', good: ok('policy_bundle') && ok('registry.l2'), text: 'The policy bundle digest matched the certificate, and the Level 2 policy witnesses authorized the email under that policy.' },
-        { title: 'The witness and registry authority checked out', good: ok('registry') && ok('authority_pins'), text: 'The registry epoch, registry trust anchor, and policy digest matched the pinned values, so the registry host was not treated as the source of authority.' },
+        { title: 'The L1 quorum checked out', good: ok('registry.l1') && ok('l1_attestation'), text: 'The certificate satisfied ' + l1Quorum + ' mechanical witness authorization, and each included Tinfoil witness attestation verified independently.' },
+        { title: 'The registry authority checked out', good: ok('registry') && ok('authority_pins'), text: 'The registry epoch, registry trust anchor, and policy digest matched the pinned values, so the registry host was not treated as the source of authority.' },
         { title: 'The gateway runtime was Tinfoil-attested', good: ok('gateway_attestation'), text: 'The gateway attestation bundle was verified with the published Tinfoil verifier, tying the action gateway to a measured enclave runtime.' },
-        { title: 'The L1 witness runtime was Tinfoil-attested', good: ok('l1_attestation'), text: 'The Level 1 mechanical witness attestation bundle was verified, tying the witness signature path to a measured enclave runtime.' },
-        { title: 'Operator identity was authorized', good: has('operator_identity.version') && ok('operator_identity') && ok('operator_registry'), text: 'The operator admission key was bound to a signed operator registry record that authorized this tenant, workflow, tool, and policy hash.' }
+        { title: 'Operator identity was authorized', good: has('operator_identity.version') && ok('operator_identity') && ok('operator_registry'), text: 'The operator admission key was bound to a signed operator registry record that authorized this tenant, workflow, tool, and policy hash.' },
+        { title: 'The bundle is durable evidence', good: has('durable_publication.present') && ok('durable_publication'), text: 'The complete certificate bundle was published to the configured durable object store with no-overwrite publication metadata.' }
       ];
     }
     function renderClaim(claim) { return '<div class="claim ' + (claim.good ? 'good' : 'bad') + '"><h3>' + (claim.good ? '✓ ' : '× ') + escapeHtml(claim.title) + '</h3><p>' + escapeHtml(claim.text) + '</p></div>'; }
     function groupChecks(checks) { return checks.reduce((acc, check) => { const key = check.name.split('.')[0]; (acc[key] ||= []).push(check); return acc; }, {}); }
     function renderCheck(check) { return '<div class="check"><div><b>' + escapeHtml(check.name) + '</b>' + (check.error ? '<div class="small">' + escapeHtml(check.error) + '</div>' : '') + '</div><strong class="' + check.severity + '">' + check.severity.toUpperCase() + '</strong></div>'; }
-    function title(name) { return ({bundle:'Bundle', certificate:'Certificate', receipts:'Receipts', receipt_chain:'Receipt chain', policy_bundle:'Policy bundle', authority_pins:'Authority pins', registry:'Registry authority', operator_registry:'Operator registry', operator_identity:'Operator identity', gateway_attestation:'Gateway Tinfoil attestation', l1_attestation:'L1 Tinfoil attestation'}[name] || name); }
+    function title(name) { return ({bundle:'Bundle', certificate:'Certificate', receipts:'Receipts', receipt_chain:'Receipt chain', policy_bundle:'Policy bundle', authority_pins:'Authority pins', durable_publication:'Durable publication', registry:'Registry authority', operator_registry:'Operator registry', operator_identity:'Operator identity', gateway_attestation:'Gateway Tinfoil attestation', l1_attestation:'L1 Tinfoil attestation'}[name] || name); }
     function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
   </script>
 </body>
