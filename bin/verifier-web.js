@@ -16,6 +16,11 @@ const server = createServer(async (request, response) => {
       response.end(indexHtml());
       return;
     }
+    if (request.method === "GET" && url.pathname === "/pilot") {
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(pilotHtml());
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/api/verify") {
       const body = await readJson(request);
       if (!body.bundle_url || typeof body.bundle_url !== "string") {
@@ -71,8 +76,18 @@ function indexHtml() {
     @media (prefers-color-scheme: dark) { :root { --ink:#f3f1ea; --muted:#b8b3a8; --line:#3b3934; --bg:#151412; --card:#1f1d1a; } }
     body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
     main { max-width:1060px; margin:0 auto; padding:44px 24px 72px; }
+    .topnav { display:flex; gap:16px; align-items:center; margin-bottom:28px; font-size:14px; }
+    .topnav a { color:var(--muted); text-decoration:none; border-bottom:1px solid transparent; }
+    .topnav a:hover { color:var(--ink); border-bottom-color:var(--ink); }
     h1 { font-family: Georgia, "Times New Roman", serif; font-size:44px; line-height:1.05; margin:0 0 12px; }
+    h2 { margin:0 0 12px; }
     p.lede { color:var(--muted); font-size:18px; max-width:780px; margin:0 0 28px; }
+    .intro p { color:var(--muted); margin:0; max-width:850px; }
+    .intro-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-top:18px; }
+    .intro-card { border:1px solid var(--line); border-radius:14px; padding:14px; background:rgb(127 127 127 / .035); }
+    .intro-card b { display:block; margin-bottom:6px; }
+    .intro-card span { color:var(--muted); font-size:14px; }
+    .text-link { color:var(--ink); font-weight:700; text-decoration:none; border-bottom:1px solid var(--ink); }
     form { display:grid; gap:12px; grid-template-columns:1fr auto; margin:28px 0; }
     input { font:inherit; padding:14px 16px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--ink); min-width:0; }
     button { font:700 15px/1 ui-sans-serif, system-ui; padding:0 22px; border:0; border-radius:10px; background:#111; color:#fff; cursor:pointer; }
@@ -109,13 +124,26 @@ function indexHtml() {
     .check:first-child { border-top:0; }
     .pass { color:var(--ok); } .fail { color:var(--bad); } .warn { color:var(--warn); }
     .small { color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
-     @media (max-width:760px) { form { grid-template-columns:1fr; } button { height:48px; } .grid, .facts { grid-template-columns:1fr; } h1 { font-size:34px; } }
+     @media (max-width:900px) { .intro-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+     @media (max-width:760px) { form { grid-template-columns:1fr; } button { height:48px; } .grid, .facts, .intro-grid { grid-template-columns:1fr; } h1 { font-size:34px; } }
   </style>
 </head>
 <body>
   <main>
+    <nav class="topnav"><a href="/">Verifier</a><a href="/pilot">Pilot overview</a></nav>
     <h1>Strata Certificate Verifier</h1>
     <p class="lede">Paste a Strata certificate or bundle URL. This verifier runs outside Claude Desktop and outside the gateway, then checks the certificate, receipt chain, policy quorum, registry authority, and Tinfoil attestations.</p>
+    <section class="card intro">
+      <h2>Why this matters</h2>
+      <p>This certificate proves an AI agent did not merely claim it sent an email. It proves the action was authorized, policy-checked, witnessed by a quorum, executed by an attested gateway, and packaged into durable evidence that can be checked later.</p>
+      <div class="intro-grid">
+        <div class="intro-card"><b>Action integrity</b><span>The email action and provider result are bound into a signed receipt chain.</span></div>
+        <div class="intro-card"><b>Witnessed execution</b><span>A Tinfoil L1 quorum notarizes the action path before and after the side effect.</span></div>
+        <div class="intro-card"><b>Operator legitimacy</b><span>The operator key is checked against a signed registry record and policy scope.</span></div>
+        <div class="intro-card"><b>Durable evidence</b><span>The complete bundle is published as a no-overwrite object for later audit.</span></div>
+      </div>
+      <p style="margin-top:16px"><a class="text-link" href="/pilot">Read the non-technical pilot overview</a></p>
+    </section>
     <form id="verify-form">
       <input id="bundle-url" name="bundle_url" placeholder="https://.../certificates/... or https://.../certificates/.../bundle" autocomplete="off" spellcheck="false" required>
       <button id="verify-button" type="submit">Verify Certificate</button>
@@ -221,6 +249,94 @@ function indexHtml() {
     function title(name) { return ({bundle:'Bundle', certificate:'Certificate', receipts:'Receipts', receipt_chain:'Receipt chain', policy_bundle:'Policy bundle', authority_pins:'Authority pins', durable_publication:'Durable publication', registry:'Registry authority', operator_registry:'Operator registry', operator_identity:'Operator identity', gateway_attestation:'Gateway Tinfoil attestation', l1_attestation:'L1 Tinfoil attestation'}[name] || name); }
     function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
   </script>
+</body>
+</html>`;
+}
+
+function pilotHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Strata Verified Email Pilot Overview</title>
+  <style>
+    :root { color-scheme: light dark; --ink:#171717; --muted:#666; --line:#d8d8d8; --bg:#faf9f5; --card:#fff; --accent:#117a37; }
+    @media (prefers-color-scheme: dark) { :root { --ink:#f3f1ea; --muted:#b8b3a8; --line:#3b3934; --bg:#151412; --card:#1f1d1a; } }
+    body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width:980px; margin:0 auto; padding:44px 24px 72px; }
+    .topnav { display:flex; gap:16px; align-items:center; margin-bottom:28px; font-size:14px; }
+    .topnav a { color:var(--muted); text-decoration:none; border-bottom:1px solid transparent; }
+    .topnav a:hover { color:var(--ink); border-bottom-color:var(--ink); }
+    h1 { font-family: Georgia, "Times New Roman", serif; font-size:46px; line-height:1.05; margin:0 0 14px; }
+    h2 { margin:0 0 12px; }
+    p.lede { color:var(--muted); font-size:19px; max-width:820px; margin:0 0 28px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:22px; margin-top:18px; box-shadow:0 1px 2px rgb(0 0 0 / .04); }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+    .claim { border:1px solid var(--line); border-radius:14px; padding:16px; background:rgb(127 127 127 / .035); }
+    .claim b { display:block; margin-bottom:6px; }
+    .claim span, .muted { color:var(--muted); }
+    code, pre { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { overflow:auto; padding:14px; border-radius:10px; background:rgb(127 127 127 / .10); }
+    .button-row { display:flex; gap:12px; flex-wrap:wrap; margin-top:18px; }
+    .button { display:inline-block; border-radius:10px; padding:12px 16px; background:#111; color:#fff; text-decoration:none; font-weight:800; }
+    .button.secondary { background:transparent; color:var(--ink); border:1px solid var(--line); }
+    .callout { border-left:4px solid var(--accent); padding-left:16px; color:var(--muted); }
+    @media (max-width:760px) { .grid { grid-template-columns:1fr; } h1 { font-size:34px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <nav class="topnav"><a href="/">Verifier</a><a href="/pilot">Pilot overview</a></nav>
+    <h1>Verified Email Pilot Overview</h1>
+    <p class="lede">Strata turns an AI side effect into a replayable evidence bundle. A reviewer can verify what happened later without trusting Claude Desktop, the gateway UI, or the operator's logs.</p>
+
+    <section class="card">
+      <h2>The Problem</h2>
+      <p>AI agents increasingly take actions in the real world: send emails, approve workflows, update records, or trigger payments. A normal log can say an action happened, but it does not prove the action was authorized, policy-compliant, witnessed, and executed by the expected runtime.</p>
+      <p class="callout">The pilot asks a narrower question: can we produce a durable certificate that lets an outside reviewer verify one real AI-sent email end to end?</p>
+    </section>
+
+    <section class="card">
+      <h2>What The Golden Bundle Demonstrates</h2>
+      <div class="grid">
+        <div class="claim"><b>Real action</b><span>Claude Desktop invoked a remote MCP tool, and the gateway sent a real email through Resend.</span></div>
+        <div class="claim"><b>Policy gate</b><span>Level 2 policy witnesses checked the email against the signed policy bundle before the side-effect capability was minted.</span></div>
+        <div class="claim"><b>Mechanical quorum</b><span>A 2-of-3 Level 1 Tinfoil witness quorum notarized the action path around the side effect.</span></div>
+        <div class="claim"><b>Attested runtimes</b><span>The gateway and all three L1 witnesses include Tinfoil evidence verified with Tinfoil's official verifier.</span></div>
+        <div class="claim"><b>Operator legitimacy</b><span>The operator admission key is bound to a signed registry record authorizing this tenant, workflow, tool, and policy hash.</span></div>
+        <div class="claim"><b>Durable evidence</b><span>The complete certificate bundle is published to S3/CloudFront as a no-overwrite durable verifier input.</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Canonical Evidence</h2>
+      <p class="muted">Use this durable bundle URL in the verifier. It is the canonical pilot artifact.</p>
+      <pre>https://d33vpkebicuw51.cloudfront.net/certificates/email/email_1778251243530_a11429ad/68543b96e4e4978d53cc2d38578058331cf9f4a4cfde450b78126376c40d311c/bundle.json</pre>
+      <p>Expected result: <code>50 pass</code>, <code>0 warn</code>, <code>0 fail</code>.</p>
+      <div class="button-row">
+        <a class="button" href="/">Open verifier</a>
+        <a class="button secondary" href="https://d33vpkebicuw51.cloudfront.net/certificates/email/email_1778251243530_a11429ad/68543b96e4e4978d53cc2d38578058331cf9f4a4cfde450b78126376c40d311c/bundle.json">Open bundle JSON</a>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>How To Read The Verifier</h2>
+      <div class="grid">
+        <div class="claim"><b>Proof snapshot</b><span>The high-level summary: L1 quorum, L2 quorum, operator, registry digest, gateway release, and durable publication.</span></div>
+        <div class="claim"><b>What this proves</b><span>Plain-English claims derived from the technical checks. These are not separate trust assumptions.</span></div>
+        <div class="claim"><b>Grouped checks</b><span>The raw verification surface. This is where auditors can inspect exact pass/warn/fail details.</span></div>
+        <div class="claim"><b>Raw report</b><span>Machine-readable JSON output for downstream audit tooling or independent review.</span></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Pilot Caveats</h2>
+      <p>The pilot demonstrates the full verification mechanics, but it is not the final production assurance posture.</p>
+      <p>The three L1 witnesses are independently keyed, separately configured, separately built, and separately Tinfoil-attested, but they are still administered under the same project/operator for pilot purposes.</p>
+      <p>L2 policy witnesses and the email registry are still Fly-hosted. They are signed and pinned, so Fly is a delivery layer rather than raw authority, but production P3/P4 deployments should move toward independent L2 operators, durable/static registry publication, and public transparency anchoring.</p>
+    </section>
+  </main>
 </body>
 </html>`;
 }
