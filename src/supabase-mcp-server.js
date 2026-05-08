@@ -59,8 +59,8 @@ export class SupabaseMcpServer {
         return toolResult(structuredContent, structuredContent.status !== "ready");
       }
 
-      if (name?.startsWith("supabase.")) {
-        const run = await runVerifiedSupabaseAction({ toolName: name, input: args, config: this.config, requestContext });
+      if (isSupabaseToolName(name)) {
+        const run = await runVerifiedSupabaseAction({ toolName: normalizeSupabaseToolName(name), input: args, config: this.config, requestContext });
         if (run.certificate_ref) {
           this.latestCertificate = run;
         }
@@ -116,6 +116,14 @@ export class SupabaseMcpServer {
       throw error;
     }
   }
+}
+
+function isSupabaseToolName(name) {
+  return String(name || "").startsWith("supabase_") || String(name || "").startsWith("supabase.");
+}
+
+function normalizeSupabaseToolName(name) {
+  return String(name || "").replace(/^supabase\./, "supabase_");
 }
 
 function toolResult(structuredContent, isError = false) {

@@ -190,7 +190,7 @@ function supabaseTools(config) {
       annotations: { title: "Gateway status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
     {
-      name: "supabase.list_tables_verified",
+      name: "supabase_list_tables_verified",
       title: "List Supabase Tables With Strata Evidence",
       description: "List tables from the configured Supabase project through the Strata governance proxy. Phase 1 is project-scoped and read-only.",
       inputSchema: {
@@ -204,7 +204,7 @@ function supabaseTools(config) {
       annotations: { title: "Verified table list", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
     {
-      name: "supabase.inspect_schema_verified",
+      name: "supabase_inspect_schema_verified",
       title: "Inspect Supabase Schema With Strata Evidence",
       description: "Inspect schema metadata for the configured Supabase project using a constrained catalog query.",
       inputSchema: {
@@ -218,7 +218,7 @@ function supabaseTools(config) {
       annotations: { title: "Verified schema inspect", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
     {
-      name: "supabase.query_readonly_verified",
+      name: "supabase_query_readonly_verified",
       title: "Run Read-Only Supabase Query With Strata Evidence",
       description: `Run a single read-only SQL query against the configured Supabase project. The gateway allows SELECT, WITH, or EXPLAIN only and enforces a max row policy of ${config.supabase.maxRows}.`,
       inputSchema: {
@@ -232,7 +232,7 @@ function supabaseTools(config) {
       annotations: { title: "Verified read-only query", readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true }
     },
     {
-      name: "supabase.search_docs",
+      name: "supabase_search_docs",
       title: "Search Supabase Docs",
       description: "Search Supabase documentation through the configured Supabase MCP server. Included because docs are part of the approved phase-1 feature set.",
       inputSchema: {
@@ -249,7 +249,7 @@ function supabaseTools(config) {
 }
 
 function buildUpstreamCall(toolName, input, config) {
-  if (toolName === "supabase.list_tables_verified") {
+  if (toolName === "supabase_list_tables_verified") {
     return {
       upstreamToolName: "list_tables",
       upstreamArguments: {
@@ -258,21 +258,21 @@ function buildUpstreamCall(toolName, input, config) {
       }
     };
   }
-  if (toolName === "supabase.inspect_schema_verified") {
+  if (toolName === "supabase_inspect_schema_verified") {
     const query = schemaInspectQuery(input);
     return {
       upstreamToolName: "execute_sql",
       upstreamArguments: { query }
     };
   }
-  if (toolName === "supabase.query_readonly_verified") {
+  if (toolName === "supabase_query_readonly_verified") {
     const classification = classifyReadOnlySql(input.query, config);
     return {
       upstreamToolName: "execute_sql",
       upstreamArguments: { query: classification.ok ? enforceLimit(input.query, config.supabase.maxRows) : input.query }
     };
   }
-  if (toolName === "supabase.search_docs") {
+  if (toolName === "supabase_search_docs") {
     return {
       upstreamToolName: "search_docs",
       upstreamArguments: { query: input.query }

@@ -180,10 +180,10 @@ SUPABASE_ENABLE_UPSTREAM_CALLS=false
 Curated tools exposed to the assistant:
 
 - `gateway_status`
-- `supabase.list_tables_verified`
-- `supabase.inspect_schema_verified`
-- `supabase.query_readonly_verified`
-- `supabase.search_docs`
+- `supabase_list_tables_verified`
+- `supabase_inspect_schema_verified`
+- `supabase_query_readonly_verified`
+- `supabase_search_docs`
 
 The connector OAuth install endpoints are:
 

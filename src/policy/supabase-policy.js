@@ -13,10 +13,10 @@ export function defaultSupabasePolicyBundle(config) {
       require_read_only: true,
       allowed_features: ["database", "docs"],
       allowed_tools: [
-        "supabase.list_tables_verified",
-        "supabase.inspect_schema_verified",
-        "supabase.query_readonly_verified",
-        "supabase.search_docs"
+        "supabase_list_tables_verified",
+        "supabase_inspect_schema_verified",
+        "supabase_query_readonly_verified",
+        "supabase_search_docs"
       ],
       max_rows: config.supabase.maxRows,
       timeout_ms: config.supabase.timeoutMs,
@@ -40,7 +40,7 @@ export function evaluateSupabasePolicy({ toolName, input, request, config, polic
   ruleResults.push(rule("features_allowed", featureErrors.length === 0, { configured_features: config.supabase.features, disallowed_features: featureErrors }));
 
   let sqlClassification = null;
-  if (toolName === "supabase.query_readonly_verified" || toolName === "supabase.inspect_schema_verified") {
+  if (normalizeSupabaseToolName(toolName) === "supabase_query_readonly_verified" || normalizeSupabaseToolName(toolName) === "supabase_inspect_schema_verified") {
     sqlClassification = classifyReadOnlySql(request?.upstream_arguments?.query || input?.query || "", config);
     ruleResults.push(rule("sql_read_only", sqlClassification.ok, { errors: sqlClassification.errors, sql_digest: sqlClassification.sql_digest }));
   }
@@ -57,6 +57,10 @@ export function evaluateSupabasePolicy({ toolName, input, request, config, polic
     request_digest: request ? digestValue(request) : null,
     sql: sqlClassification
   };
+}
+
+function normalizeSupabaseToolName(toolName) {
+  return String(toolName || "").replace(/^supabase\./, "supabase_");
 }
 
 function rule(name, pass, details = {}) {
