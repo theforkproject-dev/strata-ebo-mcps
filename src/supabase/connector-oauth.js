@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { writeSupabaseConnectorCredential } from "./upstream-mcp-client.js";
 
 export class SupabaseConnectorOAuth {
@@ -33,15 +33,19 @@ export class SupabaseConnectorOAuth {
         callback_url: this.config.supabase.oauth.redirectUri
       });
     }
+    const codeVerifier = randomBytes(32).toString("base64url");
     const state = signState({
       nonce: randomBytes(16).toString("base64url"),
       connector_id: this.config.supabase.connectorId,
+      code_verifier: codeVerifier,
       issued_at: Date.now()
     }, this.stateSecret());
     const authorize = new URL(this.config.supabase.oauth.authorizationUrl);
     authorize.searchParams.set("response_type", "code");
     authorize.searchParams.set("client_id", this.config.supabase.oauth.clientId);
     authorize.searchParams.set("redirect_uri", this.config.supabase.oauth.redirectUri);
+    authorize.searchParams.set("code_challenge", pkceChallenge(codeVerifier));
+    authorize.searchParams.set("code_challenge_method", "S256");
     if (this.config.supabase.oauth.scope) {
       authorize.searchParams.set("scope", this.config.supabase.oauth.scope);
     }
@@ -72,6 +76,9 @@ export class SupabaseConnectorOAuth {
     form.set("grant_type", "authorization_code");
     form.set("code", code);
     form.set("redirect_uri", this.config.supabase.oauth.redirectUri);
+    if (stateCheck.payload.code_verifier) {
+      form.set("code_verifier", stateCheck.payload.code_verifier);
+    }
     const tokenAuth = tokenEndpointAuth(this.config, form);
 
     const tokenResponse = await this.fetchImpl(this.config.supabase.oauth.tokenUrl, {
@@ -112,6 +119,10 @@ function signState(payload, secret) {
   const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const signature = createHmac("sha256", secret).update(encoded).digest("base64url");
   return `${encoded}.${signature}`;
+}
+
+function pkceChallenge(verifier) {
+  return createHash("sha256").update(verifier).digest("base64url");
 }
 
 function tokenEndpointAuth(config, form) {
