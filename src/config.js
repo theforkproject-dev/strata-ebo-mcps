@@ -60,7 +60,7 @@ export function loadConfig(env = process.env) {
         ttlAttribute: env.OAUTH_DYNAMODB_TTL_ATTRIBUTE || "ttl"
       },
       consentPassword: env.OAUTH_CONSENT_PASSWORD || "",
-      consentPasswordHash: env.OAUTH_CONSENT_PASSWORD_SHA256 || "",
+      consentPasswordHash: env.OAUTH_CONSENT_PASSWORD_SHA256 || env.SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || "",
       accessTokenTtlMs: Number(env.OAUTH_ACCESS_TOKEN_TTL_SECONDS || 3600) * 1000,
       refreshTokenTtlMs: Number(env.OAUTH_REFRESH_TOKEN_TTL_SECONDS || 7 * 24 * 3600) * 1000,
       codeTtlMs: Number(env.OAUTH_CODE_TTL_SECONDS || 600) * 1000

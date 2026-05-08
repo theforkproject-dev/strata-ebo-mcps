@@ -208,6 +208,14 @@ SUPABASE_OAUTH_TOKEN_AUTH_METHOD=client_secret_basic
 
 `SUPABASE_ENABLE_UPSTREAM_CALLS=false` keeps the gateway in no-side-effect scaffold mode. In that mode, policy and certificate artifacts are produced, but no call is made to Supabase MCP. Set it to `true` only after connector OAuth credentials and partner project scope are confirmed.
 
+For Claude Desktop or another MCP client to connect to the Supabase gateway, set a Strata MCP OAuth consent hash. In Tinfoil deployments, prefer the dedicated secret:
+
+```ini
+SUPABASE_MCP_CONSENT_PASSWORD_SHA256=<sha256-hex-of-operator-passphrase>
+```
+
+If that secret is not set, the gateway falls back to the generic `OAUTH_CONSENT_PASSWORD_SHA256` / `OAUTH_CONSENT_PASSWORD` settings.
+
 ## Governance Policy Bundle
 
 The active policy bundle is a versioned artifact at `policies/email-policy-epoch-001.json`. In the live architecture, the registry plane publishes it rather than the MCP gateway or individual policy witnesses:
