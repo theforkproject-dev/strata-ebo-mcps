@@ -1,5 +1,12 @@
 export { canonicalize, canonicalJsonBytes } from "./canonicalize.js";
 export {
+  ACTION_REGISTRY_EPOCH_VERSION,
+  actionRegistryEpochDigest,
+  signActionRegistryEpoch,
+  verifyActionRegistryEpoch,
+  verifyActionRegistryForSubject
+} from "./action-registry.js";
+export {
   ADMISSION_MANIFEST_VERSION,
   VERIFIER_PROFILE_VERSION,
   admissionManifestDigest,
@@ -142,11 +149,43 @@ export { HttpWitnessClient } from "./witness-client.js";
 export { parseTinfoilTargets, verifyTinfoilTargets } from "./tinfoil-verifier.js";
 export {
   WITNESS_REGISTRY_EPOCH_VERSION,
+  WITNESS_REGISTRY_POINTER_VERSION,
   WITNESS_TIERS,
   collectWitnessedSubjects,
+  registryGatewayKeyring,
   signWitnessRegistryEpoch,
+  signWitnessRegistryPointer,
+  verifyWitnessRegistryPointer,
+  verifyWitnessSignRequestAuthority,
   verifyWitnessAuthority,
   verifyWitnessRegistryEpoch,
-  witnessRegistryEpochDigest
+  witnessRegistryEpochDigest,
+  witnessRegistryPointerDigest
 } from "./witness-registry.js";
+export {
+  WITNESS_SIGN_REQUEST_VERSION,
+  createWitnessSignRequest,
+  signWitnessSignRequest,
+  verifyWitnessSignRequest,
+  witnessSignRequestDigest,
+  witnessSignRequestPayload,
+  witnessSignRequestSigningMessage,
+  witnessSignRequestSubjectDigest
+} from "./witness-request.js";
+export {
+  FileWitnessGuardLog,
+  LocalWitnessGuardLog,
+  S3WitnessGuardLog,
+  WITNESS_GUARD_BACKENDS,
+  WITNESS_GUARD_ENTRY_VERSION,
+  WitnessGuardEquivocationError,
+  createWitnessGuardEntry,
+  validateWitnessGuardEntry,
+  verifyS3WitnessGuardEvidence,
+  verifyWitnessGuardEvidence,
+  witnessGuardEntryDigest,
+  witnessGuardKey,
+  witnessGuardKeyHash
+} from "./witness-guard-log.js";
 export { verifySession } from "./session-verifier.js";
+export { createWitnessPocVerifierProfile, verifyWitnessPocProfile } from "./witness-poc-profile.js";
