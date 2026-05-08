@@ -16,6 +16,7 @@ import {
   enforceLimit,
   redactSupabaseResult,
   summarizeSupabaseResult,
+  supabaseToolResultPayload,
   upstreamMcpUrl,
   upstreamOrigin
 } from "../supabase/canonical.js";
@@ -290,6 +291,10 @@ function schemaInspectQuery(input) {
 async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl, requestContext, request, policyBundle, policyDecision, upstreamResult, upstreamError, denied }) {
   const credential = await loadSupabaseConnectorCredential(config);
   const resultSummary = upstreamResult ? summarizeSupabaseResult(upstreamResult) : null;
+  const toolResultPayload = supabaseToolResultPayload(upstreamResult, {
+    mode: config.supabase.toolResultMode,
+    maxChars: config.supabase.toolResultMaxChars
+  });
   const verification = {
     ok: !denied && !upstreamError,
     phase: "supabase-mcp-governance-proxy-v0.1",
@@ -368,6 +373,7 @@ async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl,
     connector: certificate.connector,
     policy: certificate.policy,
     result: resultSummary,
+    tool_result: toolResultPayload,
     result_preview: certificate.result_preview,
     upstream_error: upstreamError,
     errors: certificate.errors

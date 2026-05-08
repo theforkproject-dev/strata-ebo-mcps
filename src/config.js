@@ -141,6 +141,8 @@ function loadSupabaseConfig(env, publicBaseUrl, dataDir) {
     mcpBaseUrl: trimSlash(env.SUPABASE_MCP_BASE_URL || "https://mcp.supabase.com/mcp"),
     upstreamCallsEnabled: truthy(env.SUPABASE_ENABLE_UPSTREAM_CALLS || env.SUPABASE_MCP_ENABLE_UPSTREAM_CALLS),
     evidenceMode: env.SUPABASE_EVIDENCE_MODE || "digest-only",
+    toolResultMode: env.SUPABASE_TOOL_RESULT_MODE || env.SUPABASE_MCP_RESULT_MODE || "summary",
+    toolResultMaxChars: positiveInt(env.SUPABASE_TOOL_RESULT_MAX_CHARS || 20000, "SUPABASE_TOOL_RESULT_MAX_CHARS"),
     maxRows: positiveInt(env.SUPABASE_QUERY_MAX_ROWS || 100, "SUPABASE_QUERY_MAX_ROWS"),
     timeoutMs: positiveInt(env.SUPABASE_QUERY_TIMEOUT_MS || 30000, "SUPABASE_QUERY_TIMEOUT_MS"),
     blockedSchemas: parseCsv(env.SUPABASE_BLOCKED_SCHEMAS || "auth,storage,vault"),

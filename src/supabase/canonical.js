@@ -165,6 +165,23 @@ export function redactSupabaseResult(value, maxChars = 1200) {
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n...[truncated]` : text;
 }
 
+export function supabaseToolResultPayload(value, { mode = "summary", maxChars = 20000 } = {}) {
+  if (!value || mode === "summary") {
+    return null;
+  }
+  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const truncated = text.length > maxChars;
+  return {
+    version: "strata.supabase.tool_result_payload.v1",
+    mode,
+    truncated,
+    bytes: Buffer.byteLength(text, "utf8"),
+    text: truncated ? `${text.slice(0, maxChars)}\n...[truncated]` : text,
+    json: mode === "full-json" && !truncated && typeof value !== "string" ? value : null,
+    note: "This live MCP response payload is intentionally not included in the durable certificate bundle, which remains digest-only."
+  };
+}
+
 function manifestTool(strataTool, upstreamTool, policyClass, certificateProfile) {
   return {
     strata_tool: strataTool,

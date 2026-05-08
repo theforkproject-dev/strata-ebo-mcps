@@ -210,6 +210,15 @@ SUPABASE_OAUTH_RESOURCE=https://mcp.supabase.com/mcp?project_ref=...&read_only=t
 
 `SUPABASE_ENABLE_UPSTREAM_CALLS=false` keeps the gateway in no-side-effect scaffold mode. In that mode, policy and certificate artifacts are produced, but no call is made to Supabase MCP. Set it to `true` only after connector OAuth credentials and partner project scope are confirmed.
 
+Supabase certificate bundles default to digest-only evidence. The live MCP response can still return upstream data to Claude for actual work by setting:
+
+```ini
+SUPABASE_TOOL_RESULT_MODE=text
+SUPABASE_TOOL_RESULT_MAX_CHARS=20000
+```
+
+This affects only the live MCP tool response. Durable certificate bundles continue to store result digests, byte counts, and metadata rather than raw Supabase data.
+
 For Claude Desktop or another MCP client to connect to the Supabase gateway, set a Strata MCP OAuth consent hash. In Tinfoil deployments, prefer the dedicated secret:
 
 ```ini
