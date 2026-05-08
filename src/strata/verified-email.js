@@ -1005,9 +1005,9 @@ async function createWitnessClients(specs, keyring, config, gatewaySigner) {
       gatewayKeyId: gatewaySigner.keyId,
       gatewaySigner,
       witnessId: spec.witnessId ?? spec.id,
-      witnessEpochId: spec.witnessEpochId ?? config.witness.signedRequests.witnessEpochId,
-      registryEpochId: spec.registryEpochId ?? config.witness.signedRequests.registryEpochId,
-      workflowId: spec.workflowId ?? config.witness.signedRequests.workflowId
+      witnessEpochId: witnessEpochIdForSpec({ spec, config }),
+      registryEpochId: registryEpochIdForSpec({ spec, config }),
+      workflowId: workflowIdForSpec({ spec, config })
     } : null
   }));
   for (const witness of witnesses) {
@@ -1106,7 +1106,7 @@ async function checkL1WitnessAuthorization({ spec, config, policyHash, publicKey
       errors.push(`registry epoch id mismatch: expected ${config.witness.signedRequests.registryEpochId}, got ${registryEpoch.epoch_id}`);
     }
 
-    const workflowId = config.witness.signedRequests.workflowId;
+    const workflowId = workflowIdForSpec({ spec, config });
     const gateway = (registryEpoch.gateways || []).find((candidate) => candidate.key_id === config.gateway.keyId);
     const witnessKeyId = publicKey.key_id || null;
     const witness = (registryEpoch.witnesses || []).find((candidate) => candidate.key_id === witnessKeyId);
@@ -1126,7 +1126,7 @@ async function checkL1WitnessAuthorization({ spec, config, policyHash, publicKey
       kind: "witness",
       expectedIdField: "witness_id",
       expectedId: spec.id,
-      expectedEpochId: config.witness.signedRequests.witnessEpochId,
+      expectedEpochId: witnessEpochIdForSpec({ spec, config }),
       workflowId,
       policyHash,
       now,
@@ -1150,7 +1150,7 @@ async function checkL1WitnessAuthorization({ spec, config, policyHash, publicKey
       registry_epoch_id: registryEpoch.epoch_id || null,
       registry_epoch_digest: registryEpochDigest,
       expected_registry_epoch_digest: expectedRegistryEpochDigest || null,
-      expected_registry_epoch_id: config.witness.signedRequests.registryEpochId || null,
+      expected_registry_epoch_id: registryEpochIdForSpec({ spec, config }) || null,
       registry_valid_from: registryEpoch.valid_from || null,
       registry_valid_until: registryEpoch.valid_until || null,
       effective_valid_until: effectiveValidUntil,
@@ -1212,6 +1212,18 @@ function l1WitnessRegistryEpochDigest({ spec, config }) {
 
 function l1WitnessEvidenceForSpec({ spec, config }) {
   return (config.attestation?.l1Witnesses || []).find((item) => item.witnessId === spec.id || item.witnessId === spec.witnessId);
+}
+
+function witnessEpochIdForSpec({ spec, config }) {
+  return spec.witnessEpochId || l1WitnessEvidenceForSpec({ spec, config })?.witnessEpochId || config.witness.signedRequests.witnessEpochId;
+}
+
+function registryEpochIdForSpec({ spec, config }) {
+  return spec.registryEpochId || l1WitnessEvidenceForSpec({ spec, config })?.registryEpochId || config.witness.signedRequests.registryEpochId;
+}
+
+function workflowIdForSpec({ spec, config }) {
+  return spec.workflowId || l1WitnessEvidenceForSpec({ spec, config })?.workflowId || config.witness.signedRequests.workflowId;
 }
 
 function registryEntryAuthorizationStatus({ entry, label, kind, expectedIdField, expectedId, expectedEpochId = null, workflowId, policyHash, now, publicKeyPem = null }) {
