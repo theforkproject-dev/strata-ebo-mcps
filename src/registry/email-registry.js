@@ -17,7 +17,7 @@ import {
 } from "../policy/email-policy.js";
 
 export const REGISTRY_ID = "strata-email-demo-registry";
-export const REGISTRY_EPOCH_ID = "email-demo-epoch-001";
+export const REGISTRY_EPOCH_ID = process.env.EMAIL_REGISTRY_EPOCH_ID || "email-demo-epoch-001";
 export const REGISTRY_VALID_FROM = "2026-04-28T00:00:00.000Z";
 export const OPERATOR_REGISTRY_RECORD_VERSION = "strata.operator_registry_record.v1";
 

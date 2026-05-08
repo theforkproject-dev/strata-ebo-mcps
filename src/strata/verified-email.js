@@ -350,6 +350,15 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
   const witnesses = await createWitnessClients(config.witnesses, keyring, config, keys.gateway.signer);
   writeJson(paths.keyring, keyring);
 
+  const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
+  const registryPreflight = registryBinding
+    ? verifyConfiguredL1WitnessSetAuthority({ witnesses, registryBinding, policyHash: policyQuorum.policy_bundle_digest, threshold: config.witness.threshold })
+    : { ok: true, errors: [] };
+  if (!registryPreflight.ok) {
+    writeJson(paths.verification, { ok: false, registry_preflight: registryPreflight });
+    throw new Error(`L1 registry preflight failed before side effect: ${registryPreflight.errors.join("; ")}`);
+  }
+
   const log = new JsonlReceiptLog(paths.receipts);
   log.reset();
   const transparencyLog = new LocalTransparencyLog({
@@ -407,7 +416,6 @@ export async function runVerifiedEmailSend(input, config, requestContext = {}) {
   });
   const policyBundleVerification = verifyPolicyBundleForQuorum(policyBundle, policyQuorum);
   const ok = session.ok && checkpointResult.ok;
-  const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
   const operatorRegistryBinding = await loadAndWriteOperatorRegistryBinding(config, paths.operatorRegistry, admissionManifest);
   const operatorAdmission = verifyOperatorAdmissionManifest(admissionManifest, {
     operatorRegistryBinding,
@@ -1012,9 +1020,49 @@ async function createWitnessClients(specs, keyring, config, gatewaySigner) {
   }));
   for (const witness of witnesses) {
     const publicKey = await witness.publicKey();
+    witness.publicKeyInfo = publicKey;
     keyring[publicKey.key_id] = publicKey.public_key_pem;
   }
   return witnesses;
+}
+
+function verifyConfiguredL1WitnessSetAuthority({ witnesses, registryBinding, policyHash, threshold }) {
+  const registryEpoch = registryBinding?.epoch || null;
+  const now = new Date();
+  const checks = witnesses.map((witness) => {
+    const publicKey = witness.publicKeyInfo || {};
+    const entry = (registryEpoch?.witnesses || []).find((candidate) => candidate.key_id === publicKey.key_id);
+    const check = registryEntryAuthorizationStatus({
+      entry,
+      label: publicKey.key_id || witness.id,
+      kind: "witness",
+      expectedIdField: "witness_id",
+      expectedId: witness.id,
+      expectedEpochId: witness.signedRequests?.witnessEpochId,
+      workflowId: witness.signedRequests?.workflowId,
+      policyHash,
+      now,
+      publicKeyPem: publicKey.public_key_pem
+    });
+    const tierOk = entry?.tier === "mechanical";
+    return {
+      witness_id: witness.id,
+      witness_key_id: publicKey.key_id || null,
+      ok: check.ok && tierOk,
+      errors: [...check.errors, ...(tierOk ? [] : [`witness tier must be mechanical, got ${entry?.tier || "missing"}`])],
+      warnings: check.warnings
+    };
+  });
+  const authorized = checks.filter((check) => check.ok).length;
+  return {
+    ok: authorized >= threshold,
+    authorized,
+    threshold,
+    registry_epoch_id: registryEpoch?.epoch_id || null,
+    registry_epoch_digest: registryBinding?.epoch_digest || null,
+    checks,
+    errors: checks.flatMap((check) => check.errors.map((error) => `${check.witness_id}: ${error}`))
+  };
 }
 
 async function checkWitness(spec, config, policyHash) {
