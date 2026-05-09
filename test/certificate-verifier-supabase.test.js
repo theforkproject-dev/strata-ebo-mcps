@@ -58,7 +58,17 @@ test("valid Supabase policy-denial bundle verifies under phase-1 profile", async
   assert.equal(check(report, "supabase.proof.side_effect").ok, true);
 });
 
-function buildSupabaseBundle({ denied = false } = {}) {
+test("valid Supabase signed policy quorum bundle verifies under phase-1 profile", async () => {
+  const report = await verifyCertificateBundle(buildSupabaseBundle({ quorum: true }));
+
+  assert.equal(report.ok, true);
+  assert.equal(check(report, "supabase.policy_decision.version").ok, true);
+  assert.equal(check(report, "supabase.policy_quorum.threshold").ok, true);
+  assert.equal(check(report, "supabase.policy_quorum.signatures_present").ok, true);
+  assert.equal(check(report, "supabase.policy_quorum.certificate_binding").ok, true);
+});
+
+function buildSupabaseBundle({ denied = false, quorum = false } = {}) {
   const connectorManifest = {
     version: "strata.supabase.connector_manifest.v1",
     connector_id: "heyjil-supabase-pilot",
@@ -135,6 +145,7 @@ function buildSupabaseBundle({ denied = false } = {}) {
     request_digest: digestValue(request),
     sql
   };
+  const policyArtifact = quorum ? policyQuorum(policyDecision, denied) : policyDecision;
   const resultMetadata = denied ? { upstream_error: null } : {
     version: "strata.supabase.result_summary.v1",
     result_digest: digestValue({ result: [{ id: 1 }] }),
@@ -149,6 +160,7 @@ function buildSupabaseBundle({ denied = false } = {}) {
     policy: { ok: !denied, decision: policyDecision.decision, reasons: policyDecision.reasons },
     upstream: { ok: !denied, error: null, error_category: null }
   };
+  const decisionDigests = quorum ? policyArtifact.decisions.map((decision) => digestValue({ subject: decision.subject, signature: decision.signature })) : undefined;
   const certificateBody = {
     version: denied ? "strata.supabase.policy_denial_certificate.v1" : "strata.supabase.mcp_action_certificate.v1",
     run_id: "supabase_test_run",
@@ -181,19 +193,25 @@ function buildSupabaseBundle({ denied = false } = {}) {
     },
     policy: {
       tier: "level-2-policy-scaffold",
-      decision: policyDecision.decision,
-      reasons: policyDecision.reasons,
-      policy_id: policyDecision.policy_id,
-      policy_epoch_id: policyDecision.policy_epoch_id,
+      decision: policyArtifact.decision,
+      reasons: quorum ? policyArtifact.deny_reasons : policyDecision.reasons,
+      policy_id: policyArtifact.policy_id,
+      policy_epoch_id: policyArtifact.policy_epoch_id,
       policy_bundle_version: policyBundle.version,
-      policy_bundle_digest: policyDecision.policy_bundle_digest,
+      policy_bundle_digest: policyArtifact.policy_bundle_digest,
+      ...(quorum ? {
+        policy_witness_quorum: `${policyArtifact.allow_count}-of-${policyArtifact.total_witnesses}`,
+        policy_quorum_threshold: policyArtifact.threshold,
+        policy_quorum_version: policyArtifact.version,
+        decision_digests: decisionDigests
+      } : {}),
       rule_results: policyDecision.rule_results
     },
     proof: {
       assurance_mode: "mcp-governance-proxy-phase1-scaffold",
       witness_tiers: ["level-1-mechanical", "level-2-policy"],
       mechanical_witness_quorum: "2-of-3",
-      policy_witness_quorum: "2-of-3",
+      policy_witness_quorum: quorum ? `${policyArtifact.allow_count}-of-${policyArtifact.total_witnesses}` : "2-of-3",
       side_effect_executed: !denied,
       verified: !denied,
       note: "Phase-1 scaffold records connector policy and upstream result digests."
@@ -229,7 +247,7 @@ function buildSupabaseBundle({ denied = false } = {}) {
     verification,
     admission_manifest: null,
     operator_registry: null,
-    policy_decision: policyDecision,
+    policy_decision: policyArtifact,
     policy_bundle: policyBundle,
     registry_epoch: null,
     gateway_attestation: null,
@@ -238,6 +256,48 @@ function buildSupabaseBundle({ denied = false } = {}) {
     supabase_request: request,
     supabase_result_metadata: resultMetadata,
     recipient_verifications: []
+  };
+}
+
+function policyQuorum(policyDecision, denied) {
+  const decisions = ["p1", "p2", "p3"].map((witnessId) => {
+    const subject = {
+      ...policyDecision,
+      domain: "policy.supabase.mcp",
+      witness_id: witnessId,
+      issued_at: "2026-05-09T17:00:00.000Z",
+      tool_name: "supabase_query_readonly_verified",
+      input_digest: "input-digest-placeholder",
+      sql_digest: policyDecision.sql.sql_digest
+    };
+    return {
+      witness_id: witnessId,
+      url: `https://policy-${witnessId}.example.test`,
+      key_id: `policy-witness:${witnessId}:test`,
+      subject,
+      signature: {
+        key_id: `policy-witness:${witnessId}:test`,
+        algorithm: "Ed25519",
+        signature: `sig-${witnessId}`
+      }
+    };
+  });
+  return {
+    version: "strata.supabase.policy_quorum.v1",
+    ok: !denied,
+    threshold: 2,
+    policy_id: policyDecision.policy_id,
+    policy_epoch_id: policyDecision.policy_epoch_id,
+    policy_bundle_digest: policyDecision.policy_bundle_digest,
+    policy_url: null,
+    request_digest: policyDecision.request_digest,
+    decision: denied ? "deny" : "allow",
+    allow_count: denied ? 0 : 3,
+    deny_count: denied ? 3 : 0,
+    total_witnesses: 3,
+    deny_reasons: denied ? policyDecision.reasons : [],
+    decisions,
+    errors: []
   };
 }
 

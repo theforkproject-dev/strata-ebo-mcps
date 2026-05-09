@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { digestValue } from "./primitives.js";
 import { loadCertificateBundle } from "../certificates/bundle.js";
 import { publishCertificateBundle } from "../certificates/publisher.js";
-import { evaluateSupabasePolicy, defaultSupabasePolicyBundle } from "../policy/supabase-policy.js";
+import { collectSupabasePolicyQuorum, defaultSupabasePolicyBundle } from "../policy/supabase-policy.js";
 import {
   SUPABASE_ACTION_CERTIFICATE_VERSION,
   SUPABASE_ACTION_REGISTRY_VERSION,
@@ -96,6 +96,10 @@ export async function supabaseGatewayStatus(config) {
 }
 
 export async function runVerifiedSupabaseAction({ toolName, input, config, requestContext = {} }) {
+  if (config.policyWitnesses.length < config.policyWitness.threshold) {
+    throw new Error(`Supabase verified actions require at least ${config.policyWitness.threshold} Level 2 policy witness URL(s) in POLICY_WITNESS_URLS`);
+  }
+
   const runId = `supabase_${Date.now()}_${randomUUID().slice(0, 8)}`;
   const outDir = join(config.dataDir, "runs", runId);
   const certificateUrl = `${config.certificateBaseUrl}/${runId}`;
@@ -110,7 +114,15 @@ export async function runVerifiedSupabaseAction({ toolName, input, config, reque
     config
   });
   const policyBundle = defaultSupabasePolicyBundle(config);
-  const policyDecision = evaluateSupabasePolicy({ toolName, input, request, config, policyBundle });
+  const policyDecision = await collectSupabasePolicyQuorum({
+    witnesses: config.policyWitnesses,
+    toolName,
+    input,
+    request,
+    config,
+    policyBundle,
+    threshold: config.policyWitness.threshold
+  });
   writeJson(join(outDir, "connector-manifest.json"), connectorManifest(config));
   writeJson(join(outDir, "policy-bundle.json"), policyBundle);
   writeJson(join(outDir, "policy-decision.json"), policyDecision);
@@ -303,7 +315,7 @@ async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl,
   const verification = {
     ok: !denied && !upstreamError,
     phase: "supabase-mcp-governance-proxy-v0.1",
-    policy: { ok: policyDecision.decision === "allow", decision: policyDecision.decision, reasons: policyDecision.reasons },
+    policy: { ok: policyDecision.decision === "allow", decision: policyDecision.decision, reasons: policyReasons(policyDecision) },
     upstream: { ok: Boolean(upstreamResult) && !upstreamError, error: upstreamError, error_category: upstreamError ? categorizeUpstreamError(upstreamError) : null }
   };
   writeJson(join(outDir, "supabase-result-metadata.json"), resultSummary || { upstream_error: upstreamError || null });
@@ -324,27 +336,31 @@ async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl,
     connector: publicConnectorBinding(config, credential),
     request: {
       request_digest: digestValue(request),
-      sql_digest: policyDecision.sql?.sql_digest || null,
+      sql_digest: policySqlDigest(policyDecision),
       input_digest: digestValue(request.input || {})
     },
     policy: {
-      tier: "level-2-policy-scaffold",
+      tier: "level-2-policy",
       decision: policyDecision.decision,
-      reasons: policyDecision.reasons,
+      reasons: policyReasons(policyDecision),
       policy_id: policyDecision.policy_id,
       policy_epoch_id: policyDecision.policy_epoch_id,
       policy_bundle_version: policyBundle.version,
       policy_bundle_digest: policyDecision.policy_bundle_digest,
-      rule_results: policyDecision.rule_results
+      policy_witness_quorum: `${policyDecision.allow_count}-of-${policyDecision.total_witnesses}`,
+      policy_quorum_threshold: policyDecision.threshold,
+      policy_quorum_version: policyDecision.version,
+      decision_digests: policyDecision.decisions.map((decision) => digestValue({ subject: decision.subject, signature: decision.signature })),
+      rule_results: policyRuleResults(policyDecision)
     },
     proof: {
       assurance_mode: "mcp-governance-proxy-phase1-scaffold",
       witness_tiers: ["level-1-mechanical", "level-2-policy"],
       mechanical_witness_quorum: `${config.witness.threshold}-of-${config.witnesses.length}`,
-      policy_witness_quorum: `${config.policyWitness.threshold}-of-${config.policyWitnesses.length}`,
+      policy_witness_quorum: `${policyDecision.allow_count}-of-${policyDecision.total_witnesses}`,
       side_effect_executed: Boolean(upstreamResult) && !denied,
       verified: verification.ok,
-      note: "Phase-1 scaffold records connector policy and upstream result digests. Full L1/L2 receipt wiring will follow the email gateway ActionGateway path."
+      note: "Supabase actions require signed Level 2 policy quorum before upstream execution. Full Level 1 receipt wiring will follow the email gateway ActionGateway path."
     },
     result: resultSummary,
     result_preview: config.supabase.evidenceMode === "redacted-sample" && upstreamResult ? redactSupabaseResult(upstreamResult) : null,
@@ -384,6 +400,18 @@ async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl,
     error_category: denied ? "policy_denied" : (upstreamError ? categorizeUpstreamError(upstreamError) : null),
     errors: certificate.errors
   };
+}
+
+function policyReasons(policyQuorum) {
+  return policyQuorum.deny_reasons || [...new Set((policyQuorum.decisions || []).flatMap((decision) => decision.subject?.reasons || []))];
+}
+
+function policyRuleResults(policyQuorum) {
+  return policyQuorum.decisions?.[0]?.subject?.rule_results || [];
+}
+
+function policySqlDigest(policyQuorum) {
+  return policyQuorum.decisions?.find((decision) => decision.subject?.sql_digest)?.subject.sql_digest || null;
 }
 
 function supabaseClientHints(config) {

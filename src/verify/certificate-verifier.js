@@ -7,7 +7,7 @@ import {
   witnessRegistryEpochDigest
 } from "../strata/primitives.js";
 import { policyBundleDigest, verifyPolicyQuorumAuthority } from "../policy/email-policy.js";
-import { SUPABASE_POLICY_BUNDLE_VERSION, supabasePolicyBundleDigest } from "../policy/supabase-policy.js";
+import { SUPABASE_POLICY_BUNDLE_VERSION, SUPABASE_POLICY_QUORUM_VERSION, supabasePolicyBundleDigest } from "../policy/supabase-policy.js";
 import {
   SUPABASE_ACTION_CERTIFICATE_VERSION,
   SUPABASE_CONNECTOR_MANIFEST_VERSION,
@@ -176,6 +176,7 @@ function verifySupabaseCertificateBundle(bundle, { sourceUrl = "" } = {}) {
   const connectorManifest = bundle.connector_manifest;
   const request = bundle.supabase_request;
   const policyDecision = bundle.policy_decision;
+  const policyEvidence = supabasePolicyEvidence(policyDecision);
   const policyBundle = bundle.policy_bundle;
   const resultMetadata = bundle.supabase_result_metadata;
   const verification = bundle.verification;
@@ -243,9 +244,9 @@ function verifySupabaseCertificateBundle(bundle, { sourceUrl = "" } = {}) {
       expected: SUPABASE_REQUEST_VERSION,
       actual: request.version || null
     });
-    add(checks, "supabase.request.digest", requestDigest === certificate.request?.request_digest && requestDigest === policyDecision?.request_digest, {
+    add(checks, "supabase.request.digest", requestDigest === certificate.request?.request_digest && requestDigest === policyEvidence.request_digest, {
       certificate_request_digest: certificate.request?.request_digest || null,
-      policy_request_digest: policyDecision?.request_digest || null,
+      policy_request_digest: policyEvidence.request_digest || null,
       actual: requestDigest
     });
     add(checks, "supabase.request.input_digest", inputDigest === certificate.request?.input_digest, {
@@ -267,41 +268,57 @@ function verifySupabaseCertificateBundle(bundle, { sourceUrl = "" } = {}) {
       expected: SUPABASE_POLICY_BUNDLE_VERSION,
       actual: policyBundle.version || null
     });
-    add(checks, "supabase.policy_bundle.digest", policyDigest === certificate.policy?.policy_bundle_digest && policyDigest === policyDecision?.policy_bundle_digest, {
+    add(checks, "supabase.policy_bundle.digest", policyDigest === certificate.policy?.policy_bundle_digest && policyDigest === policyEvidence.policy_bundle_digest, {
       certificate_policy_bundle_digest: certificate.policy?.policy_bundle_digest || null,
-      policy_decision_policy_bundle_digest: policyDecision?.policy_bundle_digest || null,
+      policy_decision_policy_bundle_digest: policyEvidence.policy_bundle_digest || null,
       actual: policyDigest
     });
-    add(checks, "supabase.policy_bundle.identity", policyBundle.policy_id === certificate.policy?.policy_id && policyBundle.epoch_id === certificate.policy?.policy_epoch_id, {
+    add(checks, "supabase.policy_bundle.identity", policyBundle.policy_id === certificate.policy?.policy_id && policyBundle.policy_id === policyEvidence.policy_id && policyBundle.epoch_id === certificate.policy?.policy_epoch_id && policyBundle.epoch_id === policyEvidence.policy_epoch_id, {
       policy_id: policyBundle.policy_id || null,
       certificate_policy_id: certificate.policy?.policy_id || null,
+      policy_decision_policy_id: policyEvidence.policy_id || null,
       policy_epoch_id: policyBundle.epoch_id || null,
-      certificate_policy_epoch_id: certificate.policy?.policy_epoch_id || null
+      certificate_policy_epoch_id: certificate.policy?.policy_epoch_id || null,
+      policy_decision_policy_epoch_id: policyEvidence.policy_epoch_id || null
     });
   }
 
   add(checks, "supabase.policy_decision.present", Boolean(policyDecision), {});
   if (policyDecision) {
-    const failedRules = (policyDecision.rule_results || []).filter((item) => item.pass !== true);
-    add(checks, "supabase.policy_decision.version", policyDecision.version === SUPABASE_POLICY_DECISION_VERSION, {
-      expected: SUPABASE_POLICY_DECISION_VERSION,
+    const failedRules = (policyEvidence.rule_results || []).filter((item) => item.pass !== true);
+    add(checks, "supabase.policy_decision.version", [SUPABASE_POLICY_DECISION_VERSION, SUPABASE_POLICY_QUORUM_VERSION].includes(policyDecision.version), {
+      expected: [SUPABASE_POLICY_DECISION_VERSION, SUPABASE_POLICY_QUORUM_VERSION],
       actual: policyDecision.version || null
     });
-    add(checks, "supabase.policy_decision.result", policyDecision.decision === certificate.policy?.decision && sameArray(policyDecision.reasons || [], certificate.policy?.reasons || []), {
-      policy_decision: policyDecision.decision || null,
+    add(checks, "supabase.policy_decision.result", policyEvidence.decision === certificate.policy?.decision && sameArray(policyEvidence.reasons || [], certificate.policy?.reasons || []), {
+      policy_decision: policyEvidence.decision || null,
       certificate_decision: certificate.policy?.decision || null,
-      policy_reasons: policyDecision.reasons || [],
+      policy_reasons: policyEvidence.reasons || [],
       certificate_reasons: certificate.policy?.reasons || []
     });
-    add(checks, "supabase.policy_decision.rule_consistency", policyDecision.decision === "allow" ? failedRules.length === 0 : failedRules.length > 0, {
-      decision: policyDecision.decision || null,
+    add(checks, "supabase.policy_decision.rule_consistency", policyEvidence.decision === "allow" ? failedRules.length === 0 : failedRules.length > 0, {
+      decision: policyEvidence.decision || null,
       failed_rules: failedRules.map((item) => item.rule)
     });
-    const expectedSqlDigest = policyDecision.sql?.sql_digest || null;
+    const expectedSqlDigest = policyEvidence.sql_digest || null;
     add(checks, "supabase.policy_decision.sql_digest", (certificate.request?.sql_digest || null) === expectedSqlDigest, {
       expected: expectedSqlDigest,
       actual: certificate.request?.sql_digest || null
     });
+    if (policyEvidence.is_quorum) {
+      add(checks, "supabase.policy_quorum.threshold", policyEvidence.allow_count >= policyEvidence.threshold === (policyEvidence.decision === "allow"), {
+        allow_count: policyEvidence.allow_count,
+        threshold: policyEvidence.threshold,
+        decision: policyEvidence.decision || null
+      });
+      add(checks, "supabase.policy_quorum.signatures_present", (policyDecision.decisions || []).every((decision) => decision.subject && decision.signature?.signature), {
+        decision_count: (policyDecision.decisions || []).length
+      });
+      add(checks, "supabase.policy_quorum.certificate_binding", sameArray(policyEvidence.decision_digests || [], certificate.policy?.decision_digests || []), {
+        expected: certificate.policy?.decision_digests || [],
+        actual: policyEvidence.decision_digests || []
+      });
+    }
   }
 
   add(checks, "supabase.verification.present", Boolean(verification), {});
@@ -320,9 +337,9 @@ function verifySupabaseCertificateBundle(bundle, { sourceUrl = "" } = {}) {
       upstream_ok: verification.upstream?.ok ?? null
     });
   }
-  add(checks, "supabase.denied_consistency", certificate.denied === (policyDecision?.decision === "deny"), {
+  add(checks, "supabase.denied_consistency", certificate.denied === (policyEvidence.decision === "deny"), {
     certificate_denied: certificate.denied === true,
-    policy_decision: policyDecision?.decision || null
+    policy_decision: policyEvidence.decision || null
   });
 
   add(checks, "supabase.result_metadata.present", Boolean(resultMetadata), {});
@@ -559,6 +576,44 @@ function buildSupabaseEvidenceSummary(bundle, certificate) {
       retention_mode: bundle.durable_publication.retention_mode || null,
       no_overwrite: bundle.durable_publication.no_overwrite === true
     } : null
+  };
+}
+
+function supabasePolicyEvidence(policyArtifact) {
+  if (!policyArtifact) {
+    return {};
+  }
+  if (policyArtifact.version === SUPABASE_POLICY_QUORUM_VERSION) {
+    const firstSubject = policyArtifact.decisions?.[0]?.subject || {};
+    const reasons = policyArtifact.deny_reasons || [...new Set((policyArtifact.decisions || []).flatMap((decision) => decision.subject?.reasons || []))];
+    return {
+      is_quorum: true,
+      version: policyArtifact.version,
+      policy_id: policyArtifact.policy_id,
+      policy_epoch_id: policyArtifact.policy_epoch_id,
+      policy_bundle_digest: policyArtifact.policy_bundle_digest,
+      decision: policyArtifact.decision,
+      reasons,
+      rule_results: firstSubject.rule_results || [],
+      request_digest: policyArtifact.request_digest || firstSubject.request_digest || null,
+      sql_digest: firstSubject.sql_digest || null,
+      threshold: policyArtifact.threshold || 0,
+      allow_count: policyArtifact.allow_count || 0,
+      total_witnesses: policyArtifact.total_witnesses || 0,
+      decision_digests: (policyArtifact.decisions || []).map((decision) => digestValue({ subject: decision.subject, signature: decision.signature }))
+    };
+  }
+  return {
+    is_quorum: false,
+    version: policyArtifact.version,
+    policy_id: policyArtifact.policy_id,
+    policy_epoch_id: policyArtifact.policy_epoch_id,
+    policy_bundle_digest: policyArtifact.policy_bundle_digest,
+    decision: policyArtifact.decision,
+    reasons: policyArtifact.reasons || [],
+    rule_results: policyArtifact.rule_results || [],
+    request_digest: policyArtifact.request_digest || null,
+    sql_digest: policyArtifact.sql?.sql_digest || null
   };
 }
 
