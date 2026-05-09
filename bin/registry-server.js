@@ -4,6 +4,7 @@ import { loadConfig } from "../src/config.js";
 import {
   buildEmailPolicyPointer,
   buildEmailRegistryEpoch,
+  defaultSupabasePolicyBundleMetadata,
   buildOperatorRegistryRecord,
   loadRegistrySigner,
   REGISTRY_EPOCH_ID,
@@ -22,6 +23,9 @@ const policyBundle = await loadEmailPolicyBundle({
 });
 const policyUrl = process.env.POLICY_BUNDLE_URL || `${config.publicBaseUrl}/policies/epochs/${policyBundle.epoch_id}`;
 const policyDigest = policyBundleDigest(policyBundle);
+const supabasePolicy = defaultSupabasePolicyBundleMetadata(config, process.env.SUPABASE_POLICY_BUNDLE_URL || "");
+const authorizedWorkflows = parseCsv(process.env.REGISTRY_AUTHORIZED_WORKFLOWS || "email.send,supabase.query");
+const authorizedTools = parseCsv(process.env.REGISTRY_AUTHORIZED_TOOLS || "email_send_verified,supabase_list_tables_verified,supabase_inspect_schema_verified,supabase_query_readonly_verified,supabase_search_docs");
 const registryAuthoritySigner = { keyId: signer.signer.keyId, privateKey: signer.signer.privateKey, publicKeyPem: signer.publicKeyPem };
 
 const server = createServer(async (request, response) => {
@@ -35,6 +39,10 @@ const server = createServer(async (request, response) => {
         active_policy_epoch_id: policyBundle.epoch_id,
         active_policy_digest: policyDigest,
         active_policy_url: policyUrl,
+        supabase_policy_epoch_id: supabasePolicy.policy_epoch_id,
+        supabase_policy_digest: supabasePolicy.policy_bundle_digest,
+        authorized_workflows: authorizedWorkflows,
+        authorized_tools: authorizedTools,
         operator_registry_configured: Boolean(config.operator.admissionPublicKeyPem)
       });
     }
@@ -47,7 +55,9 @@ const server = createServer(async (request, response) => {
         policyWitnesses: config.policyWitnesses,
         signer: registryAuthoritySigner,
         policyBundle,
-        policyUrl
+        policyUrl,
+        additionalPolicyBundles: [supabasePolicy],
+        authorizedWorkflows
       });
       return json(response, 200, binding.epoch);
     }
@@ -78,7 +88,10 @@ const server = createServer(async (request, response) => {
         publicKeyPem: config.operator.admissionPublicKeyPem,
         signer: registryAuthoritySigner,
         policyBundle,
-        policyUrl
+        policyUrl,
+        additionalPolicyBundles: [supabasePolicy],
+        authorizedWorkflows,
+        authorizedTools
       }));
     }
     return json(response, 404, { error: "not found" });
@@ -95,9 +108,17 @@ server.listen(config.port, config.host, () => {
     policy_epoch_id: policyBundle.epoch_id,
     policy_bundle_digest: policyDigest,
     policy_url: policyUrl,
+    supabase_policy_epoch_id: supabasePolicy.policy_epoch_id,
+    supabase_policy_bundle_digest: supabasePolicy.policy_bundle_digest,
+    authorized_workflows: authorizedWorkflows,
+    authorized_tools: authorizedTools,
     operator_registry_configured: Boolean(config.operator.admissionPublicKeyPem)
   }));
 });
+
+function parseCsv(value) {
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
 
 function json(response, status, body) {
   response.writeHead(status, { "content-type": "application/json" });

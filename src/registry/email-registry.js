@@ -15,6 +15,7 @@ import {
   policyBundleDigest,
   policyBundleMetadata
 } from "../policy/email-policy.js";
+import { defaultSupabasePolicyBundle, supabasePolicyBundleDigest } from "../policy/supabase-policy.js";
 
 export const REGISTRY_ID = "strata-email-demo-registry";
 export const REGISTRY_EPOCH_ID = process.env.EMAIL_REGISTRY_EPOCH_ID || "email-demo-epoch-001";
@@ -25,19 +26,25 @@ export function loadRegistrySigner({ keyFile = "artifacts/registry/registry-auth
   return loadOrCreateEd25519Signer({ keyFile, keyId });
 }
 
-export async function buildEmailRegistryEpoch({ mechanicalWitnesses, policyWitnesses, signer, policyBundle = defaultEmailPolicyBundle(), policyUrl = "", fetchImpl = fetch }) {
+export async function buildEmailRegistryEpoch({ mechanicalWitnesses, policyWitnesses, signer, policyBundle = defaultEmailPolicyBundle(), policyUrl = "", additionalPolicyBundles = [], authorizedWorkflows = ["email.send"], fetchImpl = fetch }) {
   const policyHash = policyBundleDigest(policyBundle);
-  const mechanical = await Promise.all(mechanicalWitnesses.map((witness) => witnessEntry({ witness, tier: "mechanical", policyHash, fetchImpl })));
-  const policy = await Promise.all(policyWitnesses.map((witness) => witnessEntry({ witness, tier: "policy", policyHash, fetchImpl })));
+  const authorizedPolicyHashes = [policyHash, ...additionalPolicyBundles.map((bundle) => bundle.policy_bundle_digest)].filter(Boolean);
+  const mechanical = await Promise.all(mechanicalWitnesses.map((witness) => witnessEntry({ witness, tier: "mechanical", authorizedWorkflows, authorizedPolicyHashes, fetchImpl })));
+  const policy = await Promise.all(policyWitnesses.map((witness) => witnessEntry({ witness, tier: "policy", authorizedWorkflows, authorizedPolicyHashes, fetchImpl })));
   const epoch = {
     version: WITNESS_REGISTRY_EPOCH_VERSION,
     registry_id: REGISTRY_ID,
     epoch_id: REGISTRY_EPOCH_ID,
     valid_from: REGISTRY_VALID_FROM,
     valid_until: null,
-    workflow_id: "email.send",
+    workflow_id: authorizedWorkflows[0] || "email.send",
+    authorized_workflows: authorizedWorkflows,
     policy_bundle_digest: policyHash,
     policy_bundle_url: policyUrl || null,
+    policy_bundles: [
+      policyBundleMetadata(policyBundle, policyUrl),
+      ...additionalPolicyBundles
+    ],
     status_semantics: {
       deprecated: true,
       expired: true,
@@ -84,9 +91,13 @@ export function buildOperatorRegistryRecord({
   publicKeyPem,
   signer,
   policyBundle = defaultEmailPolicyBundle(),
-  policyUrl = ""
+  policyUrl = "",
+  additionalPolicyBundles = [],
+  authorizedWorkflows = ["email.send"],
+  authorizedTools = ["email_send_verified"]
 }) {
   const policyHash = policyBundleDigest(policyBundle);
+  const authorizedPolicyHashes = [policyHash, ...additionalPolicyBundles.map((bundle) => bundle.policy_bundle_digest)].filter(Boolean);
   const record = {
     version: OPERATOR_REGISTRY_RECORD_VERSION,
     registry_id: REGISTRY_ID,
@@ -94,10 +105,14 @@ export function buildOperatorRegistryRecord({
     tenant_id: tenantId,
     key_id: keyId,
     public_key_pem: publicKeyPem,
-    authorized_workflows: ["email.send"],
-    authorized_tools: ["email_send_verified"],
-    authorized_policy_hashes: [policyHash],
+    authorized_workflows: authorizedWorkflows,
+    authorized_tools: authorizedTools,
+    authorized_policy_hashes: authorizedPolicyHashes,
     policy_bundle_url: policyUrl || null,
+    policy_bundles: [
+      policyBundleMetadata(policyBundle, policyUrl),
+      ...additionalPolicyBundles
+    ],
     valid_from: REGISTRY_VALID_FROM,
     valid_until: null,
     status: "active",
@@ -261,7 +276,18 @@ function verifyExpectedDigest(label, actual, expected) {
   }
 }
 
-async function witnessEntry({ witness, tier, policyHash, fetchImpl }) {
+export function defaultSupabasePolicyBundleMetadata(config, policyUrl = "") {
+  const policyBundle = defaultSupabasePolicyBundle(config);
+  return {
+    policy_id: policyBundle.policy_id,
+    policy_epoch_id: policyBundle.epoch_id,
+    policy_bundle_version: policyBundle.version,
+    policy_bundle_digest: supabasePolicyBundleDigest(policyBundle),
+    policy_url: policyUrl || null
+  };
+}
+
+async function witnessEntry({ witness, tier, authorizedWorkflows, authorizedPolicyHashes, fetchImpl }) {
   const base = witness.url.replace(/\/$/, "");
   const response = await fetchImpl(`${base}/v1/public-key`);
   const publicKey = await response.json();
@@ -273,8 +299,8 @@ async function witnessEntry({ witness, tier, policyHash, fetchImpl }) {
     tier,
     key_id: publicKey.key_id,
     public_key_pem: publicKey.public_key_pem,
-    authorized_workflows: ["email.send"],
-    authorized_policy_hashes: [policyHash],
+    authorized_workflows: authorizedWorkflows,
+    authorized_policy_hashes: authorizedPolicyHashes,
     valid_from: REGISTRY_VALID_FROM,
     valid_until: null,
     status: "active",
