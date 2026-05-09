@@ -13,6 +13,7 @@ export function loadConfig(env = process.env) {
     || (env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM_BASE64 ? Buffer.from(env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM_BASE64, "base64").toString("utf8") : "");
   const policyBundleEpochId = env.POLICY_BUNDLE_EPOCH_ID || "email-policy-epoch-001";
   const oauthStoreBackend = String(env.OAUTH_STORE_BACKEND || (env.OAUTH_DYNAMODB_TABLE || env.OAUTH_DYNAMODB_TABLE_NAME ? "dynamodb" : "file")).toLowerCase();
+  const connectorCredentialStoreBackend = String(env.CONNECTOR_CREDENTIAL_STORE_BACKEND || env.SUPABASE_CONNECTOR_STORE_BACKEND || (env.CONNECTOR_CREDENTIAL_DYNAMODB_TABLE || env.SUPABASE_CONNECTOR_DYNAMODB_TABLE || env.OAUTH_DYNAMODB_TABLE || env.OAUTH_DYNAMODB_TABLE_NAME ? "dynamodb" : "file")).toLowerCase();
   const operatorAdmissionPublicKeyPem = env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM
     || (env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64 ? Buffer.from(env.OPERATOR_ADMISSION_PUBLIC_KEY_PEM_BASE64, "base64").toString("utf8") : "");
   const gatewayKeyBundle = readOptionalJson(env.GATEWAY_KEY_BUNDLE_FILE || env.TINFOIL_WITNESS_POC_GATEWAY_KEY_FILE || "");
@@ -46,6 +47,18 @@ export function loadConfig(env = process.env) {
       publicBaseUrl: trimSlash(env.CERTIFICATE_BUNDLE_PUBLIC_BASE || ""),
       lockMode: env.CERTIFICATE_BUNDLE_LOCK_MODE || "",
       publishRequired: truthy(env.CERTIFICATE_BUNDLE_PUBLISH_REQUIRED)
+    },
+    connectorCredentials: {
+      backend: connectorCredentialStoreBackend,
+      filePath: env.CONNECTOR_CREDENTIAL_STORE_PATH || env.SUPABASE_CONNECTOR_STORE_PATH || `${dataDir}/connector-credentials.json`,
+      encryptionSecret: env.CONNECTOR_CREDENTIAL_ENCRYPTION_KEY || env.SUPABASE_CONNECTOR_CREDENTIAL_ENCRYPTION_KEY || env.MCP_SESSION_SECRET || sessionSecret,
+      dynamoDb: {
+        tableName: env.CONNECTOR_CREDENTIAL_DYNAMODB_TABLE || env.SUPABASE_CONNECTOR_DYNAMODB_TABLE || env.OAUTH_DYNAMODB_TABLE || env.OAUTH_DYNAMODB_TABLE_NAME || "",
+        awsRegion: env.CONNECTOR_CREDENTIAL_DYNAMODB_AWS_REGION || env.OAUTH_DYNAMODB_AWS_REGION || env.AWS_REGION || "",
+        awsAccessKeyId: env.CONNECTOR_CREDENTIAL_DYNAMODB_AWS_ACCESS_KEY_ID || env.OAUTH_DYNAMODB_AWS_ACCESS_KEY_ID || "",
+        awsSecretAccessKey: env.CONNECTOR_CREDENTIAL_DYNAMODB_AWS_SECRET_ACCESS_KEY || env.OAUTH_DYNAMODB_AWS_SECRET_ACCESS_KEY || "",
+        ttlAttribute: env.CONNECTOR_CREDENTIAL_DYNAMODB_TTL_ATTRIBUTE || env.OAUTH_DYNAMODB_TTL_ATTRIBUTE || "ttl"
+      }
     },
     oauth: {
       enabled: Boolean(env.OAUTH_ISSUER),

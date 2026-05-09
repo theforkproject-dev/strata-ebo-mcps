@@ -210,6 +210,22 @@ SUPABASE_OAUTH_RESOURCE=https://mcp.supabase.com/mcp?project_ref=...&read_only=t
 
 `SUPABASE_ENABLE_UPSTREAM_CALLS=false` keeps the gateway in no-side-effect scaffold mode. In that mode, policy and certificate artifacts are produced, but no call is made to Supabase MCP. Set it to `true` only after connector OAuth credentials and partner project scope are confirmed.
 
+Connector OAuth credentials are stored through the connector credential store, separate from Claude/MCP OAuth tokens. The store key includes tenant id, connector type, connector id, and subject, so multiple connectors can coexist without sharing credential records. Token material is encrypted before being written to the store.
+
+For local development, use the encrypted file backend:
+
+```ini
+CONNECTOR_CREDENTIAL_STORE_BACKEND=file
+CONNECTOR_CREDENTIAL_STORE_PATH=artifacts/supabase-mcp/connector-credentials.json
+```
+
+For Tinfoil deployments, use DynamoDB. If the dedicated `CONNECTOR_CREDENTIAL_DYNAMODB_*` settings are unset, the gateway reuses the existing `OAUTH_DYNAMODB_*` table and AWS credentials:
+
+```ini
+CONNECTOR_CREDENTIAL_STORE_BACKEND=dynamodb
+CONNECTOR_CREDENTIAL_ENCRYPTION_KEY=<optional-dedicated-secret; defaults to MCP_SESSION_SECRET>
+```
+
 Supabase certificate bundles default to digest-only evidence. The live MCP response can still return upstream data to Claude for actual work by setting:
 
 ```ini
@@ -218,6 +234,17 @@ SUPABASE_TOOL_RESULT_MAX_CHARS=20000
 ```
 
 This affects only the live MCP tool response. Durable certificate bundles continue to store result digests, byte counts, and metadata rather than raw Supabase data.
+
+`gateway_status` also exposes connector client hints for skill authors:
+
+- `upstream_capabilities` such as `sql:read`, `schema:inspect`, and `docs:search`
+- `upstream_tool_mappings` from Strata tools to Supabase MCP tools
+- `semantic_input_hints`, including that `supabase_query_readonly_verified.query` carries SQL text
+- `evidence_mode_per_tool`, separating durable bundle evidence from live MCP response payloads
+- `upstream_safety_features`, including Supabase MCP's untrusted-data boundary markers
+- `error_taxonomy` for policy denials, upstream auth failures, upstream validation errors, upstream unavailability, and gateway-internal failures
+
+These hints are protocol-level affordances. Product-specific knowledge, such as which Hey Jil tables join together, belongs in client-side skills rather than in the gateway.
 
 For Claude Desktop or another MCP client to connect to the Supabase gateway, set a Strata MCP OAuth consent hash. In Tinfoil deployments, prefer the dedicated secret:
 

@@ -96,7 +96,7 @@ export class SupabaseConnectorOAuth {
     if (!tokenResponse.ok) {
       return html(response, 502, page("Supabase OAuth Error", `<p>${escapeHtml(body.error_description || body.error || `Token endpoint returned ${tokenResponse.status}`)}</p>`));
     }
-    const credential = writeSupabaseConnectorCredential(this.config, body);
+    const credential = await writeSupabaseConnectorCredential(this.config, body);
     return html(response, 200, page("Supabase Connector Installed", `
       <p>Connector <strong>${escapeHtml(this.config.supabase.connectorId)}</strong> is installed.</p>
       <p>Project ref: <code>${escapeHtml(this.config.supabase.projectRef || "not configured")}</code></p>

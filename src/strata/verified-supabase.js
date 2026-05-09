@@ -71,6 +71,7 @@ export async function supabaseGatewayStatus(config) {
     checked_at: new Date().toISOString(),
     protocol: supabaseProtocolVersions(),
     connector: publicConnectorBinding(config, credential),
+    client_hints: supabaseClientHints(config),
     upstream: {
       url: upstreamMcpUrl(config),
       calls_enabled: config.supabase.upstreamCallsEnabled,
@@ -193,7 +194,7 @@ function supabaseTools(config) {
     {
       name: "supabase_list_tables_verified",
       title: "List Supabase Tables With Strata Evidence",
-      description: "List tables from the configured Supabase project through the Strata governance proxy. Phase 1 is project-scoped and read-only.",
+      description: "List tables from the configured Supabase project through the Strata governance proxy. This preserves the upstream Supabase MCP list_tables tool mapping; pass schemas such as ['public'] and optional verbose=true for more metadata. Phase 1 is project-scoped and read-only.",
       inputSchema: {
         type: "object",
         properties: {
@@ -207,7 +208,7 @@ function supabaseTools(config) {
     {
       name: "supabase_inspect_schema_verified",
       title: "Inspect Supabase Schema With Strata Evidence",
-      description: "Inspect schema metadata for the configured Supabase project using a constrained catalog query.",
+      description: "Inspect schema metadata for the configured Supabase project using a gateway-generated read-only catalog query. Use schema/table filters when you need column-level detail before constructing a read-only SQL query.",
       inputSchema: {
         type: "object",
         properties: {
@@ -221,7 +222,7 @@ function supabaseTools(config) {
     {
       name: "supabase_query_readonly_verified",
       title: "Run Read-Only Supabase Query With Strata Evidence",
-      description: `Run a single read-only SQL query against the configured Supabase project. The gateway allows SELECT, WITH, or EXPLAIN only and enforces a max row policy of ${config.supabase.maxRows}.`,
+      description: `Run a single read-only SQL query against the configured Supabase project. Use the input field named query; it carries SQL text. The gateway allows SELECT, WITH, or EXPLAIN only and enforces a max row policy of ${config.supabase.maxRows}.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -235,7 +236,7 @@ function supabaseTools(config) {
     {
       name: "supabase_search_docs",
       title: "Search Supabase Docs",
-      description: "Search Supabase documentation through the configured Supabase MCP server. Included because docs are part of the approved phase-1 feature set.",
+      description: "Search Supabase documentation through the configured Supabase MCP server. Supabase's upstream tool expects graphql_query; the Strata wrapper also accepts query as a convenience alias.",
       inputSchema: {
         type: "object",
         properties: {
@@ -303,7 +304,7 @@ async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl,
     ok: !denied && !upstreamError,
     phase: "supabase-mcp-governance-proxy-v0.1",
     policy: { ok: policyDecision.decision === "allow", decision: policyDecision.decision, reasons: policyDecision.reasons },
-    upstream: { ok: Boolean(upstreamResult) && !upstreamError, error: upstreamError }
+    upstream: { ok: Boolean(upstreamResult) && !upstreamError, error: upstreamError, error_category: upstreamError ? categorizeUpstreamError(upstreamError) : null }
   };
   writeJson(join(outDir, "supabase-result-metadata.json"), resultSummary || { upstream_error: upstreamError || null });
   writeJson(join(outDir, "verification.json"), verification);
@@ -380,8 +381,63 @@ async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl,
     tool_result: toolResultPayload,
     result_preview: certificate.result_preview,
     upstream_error: upstreamError,
+    error_category: denied ? "policy_denied" : (upstreamError ? categorizeUpstreamError(upstreamError) : null),
     errors: certificate.errors
   };
+}
+
+function supabaseClientHints(config) {
+  const liveMode = config.supabase.toolResultMode || "summary";
+  return {
+    version: "strata.connector_client_hints.v1",
+    upstream_capabilities: ["sql:read", "schema:inspect", "docs:search"],
+    upstream_tool_mappings: {
+      supabase_list_tables_verified: "list_tables",
+      supabase_inspect_schema_verified: "execute_sql",
+      supabase_query_readonly_verified: "execute_sql",
+      supabase_search_docs: "search_docs"
+    },
+    semantic_input_hints: {
+      supabase_query_readonly_verified: {
+        query: "Single read-only SQL statement. The field is named query to match upstream MCP conventions, but semantically it carries SQL."
+      },
+      supabase_search_docs: {
+        graphql_query: "GraphQL query string for Supabase docs search. The wrapper also accepts query as an alias."
+      }
+    },
+    evidence_mode_per_tool: Object.fromEntries(["supabase_list_tables_verified", "supabase_inspect_schema_verified", "supabase_query_readonly_verified", "supabase_search_docs"].map((tool) => [tool, {
+      durable_bundle: config.supabase.evidenceMode,
+      live_response: liveMode,
+      raw_result_in_durable_bundle: false
+    }])),
+    upstream_safety_features: [
+      "supabase_prompt_injection_boundary_markers",
+      "untrusted_data_delimiters",
+      "upstream_read_only_mode"
+    ],
+    error_taxonomy: {
+      policy_denied: "Strata policy denied before upstream execution.",
+      upstream_auth_failure: "Supabase rejected the connector token, scopes, resource, or organization/project authorization.",
+      upstream_validation_error: "Supabase MCP rejected the upstream tool arguments.",
+      upstream_unavailable: "Supabase MCP was unavailable or returned a 5xx response.",
+      gateway_internal_error: "The Strata gateway failed before producing a valid upstream request."
+    },
+    skill_boundary: "Connector hints are protocol-level affordances. Product/schema-specific query recipes, such as Hey Jil table joins, belong in client-side skills."
+  };
+}
+
+function categorizeUpstreamError(error) {
+  const value = String(error || "").toLowerCase();
+  if (value.includes(" 401") || value.includes(" 403") || value.includes("unauthorized") || value.includes("forbidden") || value.includes("scope")) {
+    return "upstream_auth_failure";
+  }
+  if (value.includes(" 400") || value.includes("invalid input") || value.includes("unrecognized key") || value.includes("validation")) {
+    return "upstream_validation_error";
+  }
+  if (value.includes(" 500") || value.includes(" 502") || value.includes(" 503") || value.includes(" 504") || value.includes("unavailable")) {
+    return "upstream_unavailable";
+  }
+  return "gateway_internal_error";
 }
 
 function publicConnectorBinding(config, credential = {}) {

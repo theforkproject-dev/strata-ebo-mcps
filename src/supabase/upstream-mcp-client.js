@@ -1,5 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { createConnectorCredentialStore } from "../connectors/credential-store.js";
 import { upstreamMcpUrl } from "./canonical.js";
 
 export class SupabaseMcpClient {
@@ -92,13 +91,25 @@ export class SupabaseMcpClient {
 }
 
 export async function loadSupabaseConnectorCredential(config) {
-  const fromFile = readCredentialFile(config.supabase.oauth.storePath);
+  if (config.supabase.oauth.accessToken || config.supabase.oauth.refreshToken) {
+    return {
+      access_token: config.supabase.oauth.accessToken || "",
+      refresh_token: config.supabase.oauth.refreshToken || "",
+      token_type: "Bearer",
+      expires_at: null,
+      scope: config.supabase.oauth.scope || ""
+    };
+  }
+  const store = createConnectorCredentialStore(config);
+  const fromStore = await store.get(supabaseConnectorScope(config));
   return {
-    access_token: config.supabase.oauth.accessToken || fromFile?.access_token || "",
-    refresh_token: config.supabase.oauth.refreshToken || fromFile?.refresh_token || "",
-    token_type: fromFile?.token_type || "Bearer",
-    expires_at: fromFile?.expires_at || null,
-    scope: fromFile?.scope || config.supabase.oauth.scope || ""
+    access_token: fromStore?.access_token || "",
+    refresh_token: fromStore?.refresh_token || "",
+    token_type: fromStore?.token_type || "Bearer",
+    expires_at: fromStore?.expires_at || null,
+    scope: fromStore?.scope || config.supabase.oauth.scope || "",
+    credential_fingerprint: fromStore?.credential_fingerprint || null,
+    saved_at: fromStore?.saved_at || null
   };
 }
 
@@ -129,19 +140,19 @@ export async function refreshSupabaseConnectorCredential(config, { fetchImpl = f
     throw new Error(body.error_description || body.error || `Supabase token refresh returned ${response.status}`);
   }
   const credential = normalizeTokenResponse(body);
-  writeSupabaseConnectorCredential(config, credential);
+  await writeSupabaseConnectorCredential(config, credential);
   return credential;
 }
 
-export function writeSupabaseConnectorCredential(config, tokenResponse) {
+export async function writeSupabaseConnectorCredential(config, tokenResponse) {
   const credential = normalizeTokenResponse(tokenResponse);
-  mkdirSync(dirname(config.supabase.oauth.storePath), { recursive: true });
-  writeFileSync(config.supabase.oauth.storePath, `${JSON.stringify({
-    version: "strata.supabase.connector_credential.v1",
-    saved_at: new Date().toISOString(),
-    ...credential
-  }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  return credential;
+  const store = createConnectorCredentialStore(config);
+  return store.put(supabaseConnectorScope(config), credential, {
+    upstream_url: upstreamMcpUrl(config),
+    read_only: config.supabase.readOnly,
+    features: config.supabase.features,
+    auth_mode: "supabase_manual_oauth_app"
+  });
 }
 
 function normalizeTokenResponse(body) {
@@ -173,12 +184,13 @@ function tokenEndpointAuth(config, form) {
   return { headers: {} };
 }
 
-function readCredentialFile(path) {
-  if (!path || !existsSync(path)) {
-    return null;
-  }
-  const parsed = JSON.parse(readFileSync(path, "utf8"));
-  return parsed && typeof parsed === "object" ? parsed : null;
+function supabaseConnectorScope(config) {
+  return {
+    tenantId: config.tenant.id,
+    connectorType: "supabase_mcp",
+    connectorId: config.supabase.connectorId,
+    subject: "default"
+  };
 }
 
 async function readMcpBody(response) {
