@@ -7,11 +7,22 @@ import {
   witnessRegistryEpochDigest
 } from "../strata/primitives.js";
 import { policyBundleDigest, verifyPolicyQuorumAuthority } from "../policy/email-policy.js";
+import { SUPABASE_POLICY_BUNDLE_VERSION, supabasePolicyBundleDigest } from "../policy/supabase-policy.js";
+import {
+  SUPABASE_ACTION_CERTIFICATE_VERSION,
+  SUPABASE_CONNECTOR_MANIFEST_VERSION,
+  SUPABASE_POLICY_DECISION_VERSION
+} from "../supabase/canonical.js";
 import { verifyOperatorRegistryRecord } from "../registry/email-registry.js";
 import { verifyOperatorAdmissionManifest } from "../admission/operator-manifest.js";
 import { Verifier, hashAttestationDocument } from "@tinfoilsh/verifier";
 
 const OPERATOR_IDENTITY_BINDING_VERSION = "strata.operator_identity_binding.v1";
+const EMAIL_CERTIFICATE_BUNDLE_VERSION = "strata.email.certificate_bundle.v1";
+const SUPABASE_CERTIFICATE_BUNDLE_VERSION = "strata.supabase.certificate_bundle.v1";
+const SUPABASE_POLICY_DENIAL_CERTIFICATE_VERSION = "strata.supabase.policy_denial_certificate.v1";
+const SUPABASE_REQUEST_VERSION = "strata.supabase.request.v1";
+const SUPABASE_RESULT_SUMMARY_VERSION = "strata.supabase.result_summary.v1";
 
 export async function verifyCertificateBundleUrl(bundleUrl) {
   const normalizedUrl = normalizeBundleUrl(bundleUrl);
@@ -31,6 +42,13 @@ export function normalizeBundleUrl(value) {
 }
 
 export async function verifyCertificateBundle(bundle, { sourceUrl = "" } = {}) {
+  if (bundle?.version === SUPABASE_CERTIFICATE_BUNDLE_VERSION || String(bundle?.certificate?.version || "").startsWith("strata.supabase.")) {
+    return verifySupabaseCertificateBundle(bundle, { sourceUrl });
+  }
+  return verifyEmailCertificateBundle(bundle, { sourceUrl });
+}
+
+async function verifyEmailCertificateBundle(bundle, { sourceUrl = "" } = {}) {
   const checks = [];
   const certificate = bundle.certificate;
   const registryArtifact = bundle.registry_epoch;
@@ -41,7 +59,7 @@ export async function verifyCertificateBundle(bundle, { sourceUrl = "" } = {}) {
   const keyring = bundle.keyring || {};
   const transparencyLog = bundle.transparency_log || [];
 
-  add(checks, "bundle.version", bundle.version === "strata.email.certificate_bundle.v1", { actual: bundle.version });
+  add(checks, "bundle.version", bundle.version === EMAIL_CERTIFICATE_BUNDLE_VERSION, { actual: bundle.version });
   add(checks, "certificate.present", Boolean(certificate), {});
   if (!certificate) {
     return result({ sourceUrl, certificate: null, checks });
@@ -148,6 +166,213 @@ export async function verifyCertificateBundle(bundle, { sourceUrl = "" } = {}) {
       durable_publication: bundle.durable_publication || null
     },
     evidence: buildEvidenceSummary(bundle, certificate),
+    checks
+  });
+}
+
+function verifySupabaseCertificateBundle(bundle, { sourceUrl = "" } = {}) {
+  const checks = [];
+  const certificate = bundle.certificate;
+  const connectorManifest = bundle.connector_manifest;
+  const request = bundle.supabase_request;
+  const policyDecision = bundle.policy_decision;
+  const policyBundle = bundle.policy_bundle;
+  const resultMetadata = bundle.supabase_result_metadata;
+  const verification = bundle.verification;
+
+  add(checks, "bundle.version", bundle.version === SUPABASE_CERTIFICATE_BUNDLE_VERSION, { actual: bundle.version });
+  add(checks, "certificate.present", Boolean(certificate), {});
+  if (!certificate) {
+    return result({ sourceUrl, certificate: null, checks });
+  }
+
+  add(checks, "certificate.version", [SUPABASE_ACTION_CERTIFICATE_VERSION, SUPABASE_POLICY_DENIAL_CERTIFICATE_VERSION].includes(certificate.version), {
+    actual: certificate.version
+  });
+  add(checks, "certificate.digest", digestValue(withoutDigest(certificate)) === certificate.certificate_digest, {
+    expected: certificate.certificate_digest,
+    actual: digestValue(withoutDigest(certificate))
+  });
+  verifyDurablePublication(checks, bundle, sourceUrl);
+
+  add(checks, "supabase.connector_manifest.present", Boolean(connectorManifest), {});
+  if (connectorManifest) {
+    const manifestDigest = digestValue(connectorManifest);
+    const manifestTool = (connectorManifest.tools || []).find((tool) => tool.strata_tool === certificate.action?.mcp_tool_name);
+    add(checks, "supabase.connector_manifest.version", connectorManifest.version === SUPABASE_CONNECTOR_MANIFEST_VERSION, {
+      expected: SUPABASE_CONNECTOR_MANIFEST_VERSION,
+      actual: connectorManifest.version || null
+    });
+    add(checks, "supabase.connector_manifest.digest", manifestDigest === certificate.connector?.connector_manifest_digest, {
+      expected: certificate.connector?.connector_manifest_digest || null,
+      actual: manifestDigest
+    });
+    add(checks, "supabase.connector_manifest.tool_mapping", Boolean(manifestTool) && manifestTool.upstream_tool === certificate.action?.upstream_tool_name, {
+      strata_tool: certificate.action?.mcp_tool_name || null,
+      expected_upstream_tool: certificate.action?.upstream_tool_name || null,
+      actual_upstream_tool: manifestTool?.upstream_tool || null
+    });
+    add(checks, "supabase.connector_binding.connector", connectorManifest.connector_id === certificate.connector?.connector_id && connectorManifest.connector_type === certificate.connector?.connector_type, {
+      manifest_connector_id: connectorManifest.connector_id || null,
+      certificate_connector_id: certificate.connector?.connector_id || null,
+      manifest_connector_type: connectorManifest.connector_type || null,
+      certificate_connector_type: certificate.connector?.connector_type || null
+    });
+    add(checks, "supabase.connector_binding.project_scope", connectorManifest.upstream?.project_ref === certificate.connector?.project_ref && connectorManifest.upstream?.project_ref === request?.project_ref, {
+      manifest_project_ref: connectorManifest.upstream?.project_ref || null,
+      certificate_project_ref: certificate.connector?.project_ref || null,
+      request_project_ref: request?.project_ref || null
+    });
+    add(checks, "supabase.connector_binding.read_only", connectorManifest.upstream?.read_only === true && certificate.connector?.read_only === true && request?.read_only === true, {
+      manifest_read_only: connectorManifest.upstream?.read_only ?? null,
+      certificate_read_only: certificate.connector?.read_only ?? null,
+      request_read_only: request?.read_only ?? null
+    });
+    add(checks, "supabase.connector_binding.features", sameArray(connectorManifest.upstream?.features, certificate.connector?.features) && sameArray(connectorManifest.upstream?.features, request?.features), {
+      manifest_features: connectorManifest.upstream?.features || [],
+      certificate_features: certificate.connector?.features || [],
+      request_features: request?.features || []
+    });
+  }
+
+  add(checks, "supabase.request.present", Boolean(request), {});
+  if (request) {
+    const requestDigest = digestValue(request);
+    const inputDigest = digestValue(request.input || {});
+    add(checks, "supabase.request.version", request.version === SUPABASE_REQUEST_VERSION, {
+      expected: SUPABASE_REQUEST_VERSION,
+      actual: request.version || null
+    });
+    add(checks, "supabase.request.digest", requestDigest === certificate.request?.request_digest && requestDigest === policyDecision?.request_digest, {
+      certificate_request_digest: certificate.request?.request_digest || null,
+      policy_request_digest: policyDecision?.request_digest || null,
+      actual: requestDigest
+    });
+    add(checks, "supabase.request.input_digest", inputDigest === certificate.request?.input_digest, {
+      expected: certificate.request?.input_digest || null,
+      actual: inputDigest
+    });
+    add(checks, "supabase.request.tool_mapping", request.strata_tool_name === certificate.action?.mcp_tool_name && request.upstream_tool_name === certificate.action?.upstream_tool_name, {
+      request_strata_tool: request.strata_tool_name || null,
+      certificate_strata_tool: certificate.action?.mcp_tool_name || null,
+      request_upstream_tool: request.upstream_tool_name || null,
+      certificate_upstream_tool: certificate.action?.upstream_tool_name || null
+    });
+  }
+
+  add(checks, "supabase.policy_bundle.present", Boolean(policyBundle), {});
+  if (policyBundle) {
+    const policyDigest = supabasePolicyBundleDigest(policyBundle);
+    add(checks, "supabase.policy_bundle.version", policyBundle.version === SUPABASE_POLICY_BUNDLE_VERSION, {
+      expected: SUPABASE_POLICY_BUNDLE_VERSION,
+      actual: policyBundle.version || null
+    });
+    add(checks, "supabase.policy_bundle.digest", policyDigest === certificate.policy?.policy_bundle_digest && policyDigest === policyDecision?.policy_bundle_digest, {
+      certificate_policy_bundle_digest: certificate.policy?.policy_bundle_digest || null,
+      policy_decision_policy_bundle_digest: policyDecision?.policy_bundle_digest || null,
+      actual: policyDigest
+    });
+    add(checks, "supabase.policy_bundle.identity", policyBundle.policy_id === certificate.policy?.policy_id && policyBundle.epoch_id === certificate.policy?.policy_epoch_id, {
+      policy_id: policyBundle.policy_id || null,
+      certificate_policy_id: certificate.policy?.policy_id || null,
+      policy_epoch_id: policyBundle.epoch_id || null,
+      certificate_policy_epoch_id: certificate.policy?.policy_epoch_id || null
+    });
+  }
+
+  add(checks, "supabase.policy_decision.present", Boolean(policyDecision), {});
+  if (policyDecision) {
+    const failedRules = (policyDecision.rule_results || []).filter((item) => item.pass !== true);
+    add(checks, "supabase.policy_decision.version", policyDecision.version === SUPABASE_POLICY_DECISION_VERSION, {
+      expected: SUPABASE_POLICY_DECISION_VERSION,
+      actual: policyDecision.version || null
+    });
+    add(checks, "supabase.policy_decision.result", policyDecision.decision === certificate.policy?.decision && sameArray(policyDecision.reasons || [], certificate.policy?.reasons || []), {
+      policy_decision: policyDecision.decision || null,
+      certificate_decision: certificate.policy?.decision || null,
+      policy_reasons: policyDecision.reasons || [],
+      certificate_reasons: certificate.policy?.reasons || []
+    });
+    add(checks, "supabase.policy_decision.rule_consistency", policyDecision.decision === "allow" ? failedRules.length === 0 : failedRules.length > 0, {
+      decision: policyDecision.decision || null,
+      failed_rules: failedRules.map((item) => item.rule)
+    });
+    const expectedSqlDigest = policyDecision.sql?.sql_digest || null;
+    add(checks, "supabase.policy_decision.sql_digest", (certificate.request?.sql_digest || null) === expectedSqlDigest, {
+      expected: expectedSqlDigest,
+      actual: certificate.request?.sql_digest || null
+    });
+  }
+
+  add(checks, "supabase.verification.present", Boolean(verification), {});
+  if (verification) {
+    add(checks, "supabase.verification.policy", verification.policy?.decision === certificate.policy?.decision && verification.policy?.ok === (certificate.policy?.decision === "allow"), {
+      verification_policy: verification.policy || null,
+      certificate_policy_decision: certificate.policy?.decision || null
+    });
+    add(checks, "supabase.verification.ok", verification.ok === certificate.proof?.verified, {
+      verification_ok: verification.ok ?? null,
+      proof_verified: certificate.proof?.verified ?? null
+    });
+    add(checks, "supabase.proof.side_effect", certificate.proof?.side_effect_executed === (!certificate.denied && verification.upstream?.ok === true), {
+      side_effect_executed: certificate.proof?.side_effect_executed ?? null,
+      denied: certificate.denied === true,
+      upstream_ok: verification.upstream?.ok ?? null
+    });
+  }
+  add(checks, "supabase.denied_consistency", certificate.denied === (policyDecision?.decision === "deny"), {
+    certificate_denied: certificate.denied === true,
+    policy_decision: policyDecision?.decision || null
+  });
+
+  add(checks, "supabase.result_metadata.present", Boolean(resultMetadata), {});
+  if (resultMetadata) {
+    add(checks, "supabase.result_metadata.digest_only", isDigestOnlySupabaseResultMetadata(resultMetadata), {
+      keys: Object.keys(resultMetadata)
+    });
+    if (certificate.result) {
+      add(checks, "supabase.result_metadata.certificate_binding", digestValue(resultMetadata) === digestValue(certificate.result), {
+        certificate_result_digest: digestValue(certificate.result),
+        artifact_result_digest: digestValue(resultMetadata)
+      });
+    }
+  }
+  add(checks, "supabase.result_preview.digest_only", certificate.result_preview == null, {
+    result_preview_present: certificate.result_preview != null
+  });
+  add(checks, "supabase.raw_live_payload_absent", !hasRawSupabasePayload(bundle), {});
+
+  const phase1Scaffold = certificate.proof?.assurance_mode === "mcp-governance-proxy-phase1-scaffold" || certificate.proof?.assurance_mode === "policy_denied";
+  if (phase1Scaffold) {
+    add(checks, "supabase.receipt_profile.phase1_declared", (bundle.receipts || []).length === 0 && !bundle.checkpoint, {
+      assurance_mode: certificate.proof?.assurance_mode || null,
+      receipt_count: (bundle.receipts || []).length,
+      checkpoint_present: Boolean(bundle.checkpoint)
+    });
+    warn(checks, "supabase.receipt_parity.pending", "This Supabase certificate verifies the phase-1 connector profile; full L1/L2 receipt parity is a separate profile upgrade.");
+  } else {
+    add(checks, "supabase.receipt_profile.witnessed", (bundle.receipts || []).length > 0 && Boolean(bundle.checkpoint), {
+      assurance_mode: certificate.proof?.assurance_mode || null,
+      receipt_count: (bundle.receipts || []).length,
+      checkpoint_present: Boolean(bundle.checkpoint)
+    });
+  }
+
+  return result({
+    sourceUrl,
+    certificate: {
+      url: certificate.certificate_url,
+      digest: certificate.certificate_digest,
+      issued_at: certificate.issued_at,
+      action: certificate.action,
+      connector: certificate.connector || null,
+      request: certificate.request || null,
+      policy: certificate.policy,
+      proof: certificate.proof,
+      result: certificate.result || null,
+      durable_publication: bundle.durable_publication || null
+    },
+    evidence: buildSupabaseEvidenceSummary(bundle, certificate),
     checks
   });
 }
@@ -276,6 +501,99 @@ function buildEvidenceSummary(bundle, certificate) {
       no_overwrite: bundle.durable_publication.no_overwrite === true
     } : null
   };
+}
+
+function buildSupabaseEvidenceSummary(bundle, certificate) {
+  const gateway = certificate.tinfoil_attestation?.gateway || null;
+  const l1Witnesses = certificate.tinfoil_attestation?.l1_witnesses || [];
+  const observedL1 = bundle.l1_witness_attestations?.witnesses || [];
+  return {
+    action: {
+      tool: certificate.action?.mcp_tool_name || null,
+      upstream_tool: certificate.action?.upstream_tool_name || null,
+      method: certificate.action?.method || null,
+      side_effect_executed: certificate.proof?.side_effect_executed === true
+    },
+    connector: certificate.connector ? {
+      connector_id: certificate.connector.connector_id || null,
+      connector_type: certificate.connector.connector_type || null,
+      project_ref: certificate.connector.project_ref || null,
+      read_only: certificate.connector.read_only === true,
+      features: certificate.connector.features || [],
+      upstream_origin: certificate.connector.upstream_origin || null,
+      connector_manifest_digest: certificate.connector.connector_manifest_digest || null,
+      credential_fingerprint_present: Boolean(certificate.connector.credential_fingerprint)
+    } : null,
+    l1: {
+      quorum: certificate.proof?.mechanical_witness_quorum || certificate.proof?.mechanical_boundary_quorum || null,
+      witness_count: l1Witnesses.length,
+      observed_attestation_count: observedL1.length,
+      receipt_count: (bundle.receipts || []).length,
+      checkpoint_present: Boolean(bundle.checkpoint)
+    },
+    l2: {
+      policy_decision: certificate.policy?.decision || null,
+      policy_witness_quorum: certificate.policy?.policy_witness_quorum || null,
+      policy_epoch_id: certificate.policy?.policy_epoch_id || null,
+      policy_bundle_digest: certificate.policy?.policy_bundle_digest || null,
+      tier: certificate.policy?.tier || null
+    },
+    gateway: gateway ? {
+      container_name: gateway.container_name || null,
+      config_repo: gateway.config_repo || null,
+      config_tag: gateway.config_tag || null,
+      image_digest: gateway.image_digest || null,
+      attestation_digest: gateway.attestation_digest || null,
+      debug_mode: gateway.debug_mode === true
+    } : null,
+    operator: certificate.session ? {
+      operator_id: certificate.session.operator_id || null,
+      tenant_id: certificate.session.tenant_id || null,
+      assistant_id: certificate.session.assistant_id || null
+    } : null,
+    durable_publication: bundle.durable_publication ? {
+      backend: bundle.durable_publication.backend || null,
+      scope: bundle.durable_publication.scope || null,
+      bundle_url: bundle.durable_publication.bundle_url || null,
+      key: bundle.durable_publication.key || null,
+      retention_mode: bundle.durable_publication.retention_mode || null,
+      no_overwrite: bundle.durable_publication.no_overwrite === true
+    } : null
+  };
+}
+
+function sameArray(left = [], right = []) {
+  return JSON.stringify(left || []) === JSON.stringify(right || []);
+}
+
+function isDigestOnlySupabaseResultMetadata(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  if (hasAnyOwnKey(value, ["text", "json", "rows", "data", "content", "raw_result", "response", "tool_result", "tool_result_payload", "payload"])) {
+    return false;
+  }
+  if (value.version) {
+    return value.version === SUPABASE_RESULT_SUMMARY_VERSION
+      && value.evidence_mode === "digest-only"
+      && Boolean(value.result_digest)
+      && Boolean(value.result_text_digest)
+      && typeof value.result_bytes === "number";
+  }
+  return Object.keys(value).every((key) => key === "upstream_error");
+}
+
+function hasRawSupabasePayload(bundle) {
+  const certificate = bundle.certificate || {};
+  const resultMetadata = bundle.supabase_result_metadata || {};
+  return hasAnyOwnKey(bundle, ["tool_result", "tool_result_payload", "raw_result", "upstream_result"])
+    || hasAnyOwnKey(certificate, ["tool_result", "tool_result_payload", "raw_result", "upstream_result"])
+    || certificate.result_preview != null
+    || hasAnyOwnKey(resultMetadata, ["text", "json", "rows", "data", "content", "raw_result", "response", "payload"]);
+}
+
+function hasAnyOwnKey(value, keys) {
+  return Boolean(value && typeof value === "object" && keys.some((key) => Object.prototype.hasOwnProperty.call(value, key)));
 }
 
 function verifyOperatorIdentityBinding(checks, bundle, certificate) {
