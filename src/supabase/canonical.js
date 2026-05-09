@@ -52,7 +52,7 @@ export function connectorManifest(config) {
       blocked_tables: config.supabase.blockedTables
     },
     tools: [
-      manifestTool("supabase_list_tables_verified", "execute_sql", "database.metadata.read", "supabase.list_tables.v1"),
+      manifestTool("supabase_list_tables_verified", "list_tables", "database.metadata.read", "supabase.list_tables.v1"),
       manifestTool("supabase_inspect_schema_verified", "execute_sql", "database.metadata.read", "supabase.schema.inspect.v1"),
       manifestTool("supabase_query_readonly_verified", "execute_sql", "database.read", "supabase.query.v1"),
       manifestTool("supabase_search_docs", "search_docs", "docs.read", "supabase.docs.search.v1")

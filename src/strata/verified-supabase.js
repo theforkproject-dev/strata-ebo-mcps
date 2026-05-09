@@ -239,9 +239,13 @@ function supabaseTools(config) {
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string" }
+          query: { type: "string", description: "Convenience alias for graphql_query." },
+          graphql_query: { type: "string", description: "GraphQL query string accepted by Supabase's upstream search_docs tool." }
         },
-        required: ["query"],
+        anyOf: [
+          { required: ["query"] },
+          { required: ["graphql_query"] }
+        ],
         additionalProperties: false
       },
       annotations: { title: "Search Supabase docs", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
@@ -252,8 +256,11 @@ function supabaseTools(config) {
 function buildUpstreamCall(toolName, input, config) {
   if (toolName === "supabase_list_tables_verified") {
     return {
-      upstreamToolName: "execute_sql",
-      upstreamArguments: { query: listTablesQuery(input, config) }
+      upstreamToolName: "list_tables",
+      upstreamArguments: {
+        schemas: input.schemas || ["public"],
+        verbose: Boolean(input.verbose)
+      }
     };
   }
   if (toolName === "supabase_inspect_schema_verified") {
@@ -273,7 +280,7 @@ function buildUpstreamCall(toolName, input, config) {
   if (toolName === "supabase_search_docs") {
     return {
       upstreamToolName: "search_docs",
-      upstreamArguments: { query: input.query }
+      upstreamArguments: { graphql_query: input.graphql_query || input.query }
     };
   }
   throw new Error(`Unknown Supabase tool: ${toolName}`);
@@ -283,20 +290,6 @@ function schemaInspectQuery(input) {
   const schema = sqlLiteral(input.schema || "public");
   const tableClause = input.table ? `and table_name = ${sqlLiteral(input.table)}` : "";
   return `select table_schema, table_name, column_name, data_type, is_nullable, column_default from information_schema.columns where table_schema = ${schema} ${tableClause} order by table_schema, table_name, ordinal_position limit 500`;
-}
-
-function listTablesQuery(input, config) {
-  const requested = Array.isArray(input.schemas) && input.schemas.length > 0 ? input.schemas : ["public"];
-  const blocked = new Set((config.supabase.blockedSchemas || []).map((schema) => schema.toLowerCase()));
-  const schemas = requested.map((schema) => String(schema || "").trim()).filter(Boolean).filter((schema) => !blocked.has(schema.toLowerCase()));
-  if (schemas.length === 0) {
-    throw new Error("No allowed schemas remain after applying SUPABASE_BLOCKED_SCHEMAS");
-  }
-  const schemaList = schemas.map(sqlLiteral).join(", ");
-  if (input.verbose) {
-    return `select table_schema, table_name, column_name, ordinal_position, data_type, is_nullable, column_default from information_schema.columns where table_schema in (${schemaList}) order by table_schema, table_name, ordinal_position limit 1000`;
-  }
-  return `select table_schema, table_name, table_type from information_schema.tables where table_schema in (${schemaList}) order by table_schema, table_name limit 500`;
 }
 
 async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl, requestContext, request, policyBundle, policyDecision, upstreamResult, upstreamError, denied }) {
