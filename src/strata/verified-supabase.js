@@ -1,10 +1,34 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { digestValue } from "./primitives.js";
+import {
+  ActionGateway,
+  HttpWitnessClient,
+  JsonlReceiptLog,
+  LocalTransparencyLog,
+  createAdmissionManifest,
+  createTinfoilEvidence,
+  createVerifierProfile,
+  digestValue,
+  loadOrCreateEd25519Signer,
+  sha256Hex,
+  toolRequestDigest,
+  verifyCheckpoint,
+  verifySession,
+  verifyWitnessAuthority,
+  writeCheckpoint
+} from "./primitives.js";
 import { loadCertificateBundle } from "../certificates/bundle.js";
-import { publishCertificateBundle } from "../certificates/publisher.js";
-import { collectSupabasePolicyQuorum, defaultSupabasePolicyBundle } from "../policy/supabase-policy.js";
+import { createDurableBundleLocation, publishCertificateBundle } from "../certificates/publisher.js";
+import { collectSupabasePolicyQuorum, defaultSupabasePolicyBundle, supabasePolicyBundleDigest } from "../policy/supabase-policy.js";
+import {
+  attachOperatorSignature,
+  loadOperatorAdmissionSigner,
+  operatorAdmissionCertificateBinding,
+  verifyOperatorAdmissionManifest
+} from "../admission/operator-manifest.js";
+import { verifyPolicyQuorumAuthority } from "../policy/email-policy.js";
+import { fetchOperatorRegistryBinding, fetchRegistryBinding } from "../registry/email-registry.js";
 import {
   SUPABASE_ACTION_CERTIFICATE_VERSION,
   SUPABASE_ACTION_REGISTRY_VERSION,
@@ -20,6 +44,7 @@ import {
   upstreamMcpUrl,
   upstreamOrigin
 } from "../supabase/canonical.js";
+import { createSupabaseTool } from "../supabase/tool.js";
 import { SupabaseMcpClient, loadSupabaseConnectorCredential } from "../supabase/upstream-mcp-client.js";
 
 export async function createSupabaseActionRegistry(config) {
@@ -96,6 +121,9 @@ export async function supabaseGatewayStatus(config) {
 }
 
 export async function runVerifiedSupabaseAction({ toolName, input, config, requestContext = {} }) {
+  if (config.witnesses.length < config.witness.threshold) {
+    throw new Error(`Supabase verified actions require at least ${config.witness.threshold} Level 1 witness URL(s) in WITNESS_URLS`);
+  }
   if (config.policyWitnesses.length < config.policyWitness.threshold) {
     throw new Error(`Supabase verified actions require at least ${config.policyWitness.threshold} Level 2 policy witness URL(s) in POLICY_WITNESS_URLS`);
   }
@@ -104,6 +132,7 @@ export async function runVerifiedSupabaseAction({ toolName, input, config, reque
   const outDir = join(config.dataDir, "runs", runId);
   const certificateUrl = `${config.certificateBaseUrl}/${runId}`;
   mkdirSync(outDir, { recursive: true });
+  const paths = artifactPaths(outDir);
 
   const mapping = buildUpstreamCall(toolName, input, config);
   const request = canonicalSupabaseRequest({
@@ -113,6 +142,7 @@ export async function runVerifiedSupabaseAction({ toolName, input, config, reque
     input,
     config
   });
+  request.certificate_url = certificateUrl;
   const policyBundle = defaultSupabasePolicyBundle(config);
   const policyDecision = await collectSupabasePolicyQuorum({
     witnesses: config.policyWitnesses,
@@ -123,10 +153,10 @@ export async function runVerifiedSupabaseAction({ toolName, input, config, reque
     policyBundle,
     threshold: config.policyWitness.threshold
   });
-  writeJson(join(outDir, "connector-manifest.json"), connectorManifest(config));
-  writeJson(join(outDir, "policy-bundle.json"), policyBundle);
-  writeJson(join(outDir, "policy-decision.json"), policyDecision);
-  writeJson(join(outDir, "supabase-request.json"), request);
+  writeJson(paths.connectorManifest, connectorManifest(config));
+  writeJson(paths.policyBundle, policyBundle);
+  writeJson(paths.policyDecision, policyDecision);
+  writeJson(paths.supabaseRequest, request);
 
   if (policyDecision.decision !== "allow") {
     return writeSupabaseCertificate({
@@ -160,14 +190,88 @@ export async function runVerifiedSupabaseAction({ toolName, input, config, reque
     });
   }
 
-  let upstreamResult = null;
-  let upstreamError = null;
-  try {
-    const client = new SupabaseMcpClient(config);
-    upstreamResult = await client.callTool(mapping.upstreamToolName, mapping.upstreamArguments);
-  } catch (error) {
-    upstreamError = error.message;
+  const keys = loadGatewayKeys(config);
+  const keyring = {
+    [keys.gateway.signer.keyId]: keys.gateway.publicKeyPem,
+    [keys.tool.signer.keyId]: keys.tool.publicKeyPem,
+    [keys.transparency.signer.keyId]: keys.transparency.publicKeyPem
+  };
+  const witnesses = await createWitnessClients(config.witnesses, keyring, config, keys.gateway.signer);
+  writeJson(paths.keyring, keyring);
+
+  const policyHash = policyDecision.policy_bundle_digest;
+  const registryBinding = await loadAndWriteRegistryBinding(config, paths.registryEpoch);
+  const registryPreflight = registryBinding
+    ? verifyConfiguredL1WitnessSetAuthority({ witnesses, registryBinding, policyHash: policyDecision.policy_bundle_digest, threshold: config.witness.threshold })
+    : { ok: true, errors: [] };
+  if (!registryPreflight.ok) {
+    writeJson(paths.verification, { ok: false, registry_preflight: registryPreflight });
+    throw new Error(`Supabase L1 registry preflight failed before upstream execution: ${registryPreflight.errors.join("; ")}`);
   }
+
+  const log = new JsonlReceiptLog(paths.receipts);
+  log.reset();
+  const transparencyLog = new LocalTransparencyLog({
+    filePath: paths.transparencyLog,
+    signer: keys.transparency.signer,
+    logId: "supabase-mcp-transparency-log"
+  });
+  transparencyLog.reset();
+
+  const verifierProfile = createVerifierProfile({ profile_id: "profile.supabase-mcp.l1-l2.v1" });
+  const admissionManifest = createSignedSupabaseAdmissionManifest({ config, requestContext, policyBundle, policyHash, egressPolicy: createEgressPolicy(config) });
+  writeJson(paths.admissionManifest, admissionManifest);
+  const operatorRegistryBinding = await loadAndWriteOperatorRegistryBinding(config, paths.operatorRegistry, admissionManifest);
+  const client = new SupabaseMcpClient(config);
+  const tool = createSupabaseTool({ signer: keys.tool.signer, gatewayKeyring: keyring, client });
+  const gateway = new ActionGateway({
+    log,
+    signer: keys.gateway.signer,
+    tools: { [tool.name]: tool },
+    policyHash,
+    verifierProfile,
+    admissionManifest,
+    witnesses,
+    sideEffectWitnessThreshold: config.witness.threshold,
+    sessionBoundaryWitnessThreshold: config.witness.threshold,
+    checkpointWitnessThreshold: config.witness.threshold,
+    transparencyLog
+  });
+
+  await gateway.startSession({ sessionId: `sess_${runId}`, taskInputDigest: digestValue(request) });
+  const toolResult = await gateway.toolCall({
+    toolName: "supabase-mcp",
+    method: "MCP tools/call",
+    request,
+    inputEdges: [policyQuorumInput(policyDecision)]
+  });
+  await gateway.endSession(toolResult.output.upstream_error ? "upstream_error" : "complete");
+  const checkpoint = await gateway.createCheckpoint({ checkpointId: `chk_${runId}` });
+  writeCheckpoint(paths.checkpoint, checkpoint);
+
+  const receipts = log.readAll();
+  const transparencyLogEntries = transparencyLog.readAll();
+  const session = verifySession(receipts, keyring, {
+    transparencyLogEntries,
+    requireAdmissionManifest: true,
+    requireSideEffectQuorum: true,
+    requireBoundaryQuorum: true,
+    requireTransparencyLog: true
+  });
+  const checkpointResult = verifyCheckpoint(checkpoint, receipts, keyring, {
+    transparencyLogEntries,
+    requireCheckpointQuorum: true,
+    requireCheckpointTransparency: true
+  });
+  const policyBundleVerification = verifyPolicyBundleForQuorum(policyBundle, policyDecision);
+  const operatorAdmission = verifyOperatorAdmissionManifest(admissionManifest, {
+    operatorRegistryBinding,
+    requireRegistry: Boolean(config.registry?.url)
+  });
+  const registryAuthority = registryBinding ? verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum: policyDecision, registryBinding }) : null;
+  const verified = session.ok && checkpointResult.ok && policyBundleVerification.ok && operatorAdmission.ok && (!registryAuthority || registryAuthority.ok) && !toolResult.output.upstream_error;
+  const verification = { ok: verified, session, checkpoint: checkpointResult, policy_bundle: policyBundleVerification, operator_admission: operatorAdmission, operator_registry: operatorRegistryBinding?.verification || null, registry_authority: registryAuthority };
+  writeJson(paths.verification, verification);
 
   return writeSupabaseCertificate({
     config,
@@ -178,9 +282,22 @@ export async function runVerifiedSupabaseAction({ toolName, input, config, reque
     request,
     policyBundle,
     policyDecision,
-    upstreamResult,
-    upstreamError,
-    denied: false
+    upstreamResult: toolResult.output.upstream_result_live,
+    upstreamError: toolResult.output.upstream_error,
+    denied: false,
+    witnessed: {
+      receipts,
+      checkpoint,
+      session,
+      checkpointResult,
+      policyBundleVerification,
+      operatorAdmission,
+      admissionManifest,
+      operatorRegistryBinding,
+      registryBinding,
+      registryAuthority,
+      verified
+    }
   });
 }
 
@@ -305,7 +422,7 @@ function schemaInspectQuery(input) {
   return `select table_schema, table_name, column_name, data_type, is_nullable, column_default from information_schema.columns where table_schema = ${schema} ${tableClause} order by table_schema, table_name, ordinal_position limit 500`;
 }
 
-async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl, requestContext, request, policyBundle, policyDecision, upstreamResult, upstreamError, denied }) {
+async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl, requestContext, request, policyBundle, policyDecision, upstreamResult, upstreamError, denied, witnessed = null }) {
   const credential = await loadSupabaseConnectorCredential(config);
   const resultSummary = upstreamResult ? summarizeSupabaseResult(upstreamResult) : null;
   const toolResultPayload = supabaseToolResultPayload(upstreamResult, {
@@ -313,7 +430,7 @@ async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl,
     maxChars: config.supabase.toolResultMaxChars
   });
   const verification = {
-    ok: !denied && !upstreamError,
+    ok: witnessed ? witnessed.verified : (!denied && !upstreamError),
     phase: "supabase-mcp-governance-proxy-v0.1",
     policy: { ok: policyDecision.decision === "allow", decision: policyDecision.decision, reasons: policyReasons(policyDecision) },
     upstream: { ok: Boolean(upstreamResult) && !upstreamError, error: upstreamError, error_category: upstreamError ? categorizeUpstreamError(upstreamError) : null }
@@ -354,14 +471,25 @@ async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl,
       rule_results: policyRuleResults(policyDecision)
     },
     proof: {
-      assurance_mode: "mcp-governance-proxy-phase1-scaffold",
+      assurance_mode: witnessed ? "witnessed" : "mcp-governance-proxy-phase1-scaffold",
       witness_tiers: ["level-1-mechanical", "level-2-policy"],
       mechanical_witness_quorum: `${config.witness.threshold}-of-${config.witnesses.length}`,
       policy_witness_quorum: `${policyDecision.allow_count}-of-${policyDecision.total_witnesses}`,
       side_effect_executed: Boolean(upstreamResult) && !denied,
       verified: verification.ok,
-      note: "Supabase actions require signed Level 2 policy quorum before upstream execution. Full Level 1 receipt wiring will follow the email gateway ActionGateway path."
+      ...(witnessed ? {
+        receipt_count: witnessed.receipts.length,
+        checkpoint_id: witnessed.checkpoint.statement.checkpoint_id,
+        receipt_root: witnessed.session.finalStateRoot
+      } : {}),
+      note: witnessed
+        ? "Supabase action executed through ActionGateway with Level 1 mechanical witness receipts and signed Level 2 policy quorum."
+        : "Supabase actions require signed Level 2 policy quorum before upstream execution. Full Level 1 receipt wiring will follow the email gateway ActionGateway path."
     },
+    admission: witnessed?.admissionManifest ? operatorAdmissionCertificateBinding(witnessed.admissionManifest, { operatorRegistryBinding: witnessed.operatorRegistryBinding }) : null,
+    operator_identity: witnessed?.admissionManifest ? operatorIdentityCertificateBinding(witnessed.admissionManifest, { operatorRegistryBinding: witnessed.operatorRegistryBinding }) : null,
+    registry: registryCertificateBinding(witnessed?.registryBinding || null),
+    authority_pins: authorityPins(config, witnessed?.registryBinding || null, policyBundle),
     result: resultSummary,
     result_preview: config.supabase.evidenceMode === "redacted-sample" && upstreamResult ? redactSupabaseResult(upstreamResult) : null,
     session: {
@@ -376,8 +504,7 @@ async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl,
   const certificate = { ...certificateBody, certificate_digest: certificateDigest };
   writeJson(join(outDir, "certificate.json"), certificate);
 
-  const bundle = loadCertificateBundle({ config, runId, runDir: outDir });
-  const durablePublication = await publishCertificateBundle(config, { runId, certificateDigest, bundle });
+  const durablePublication = await publishDurableBundle(config, { runId, runDir: outDir, certificateDigest });
   const durableBundleUrl = durablePublication?.status === "published" ? durablePublication.bundle_url : null;
   return {
     ok: verification.ok,
@@ -412,6 +539,246 @@ function policyRuleResults(policyQuorum) {
 
 function policySqlDigest(policyQuorum) {
   return policyQuorum.decisions?.find((decision) => decision.subject?.sql_digest)?.subject.sql_digest || null;
+}
+
+function artifactPaths(outDir) {
+  return {
+    receipts: join(outDir, "receipts.jsonl"),
+    keyring: join(outDir, "keyring.json"),
+    checkpoint: join(outDir, "checkpoint.json"),
+    transparencyLog: join(outDir, "transparency-log.jsonl"),
+    verification: join(outDir, "verification.json"),
+    admissionManifest: join(outDir, "admission-manifest.json"),
+    operatorRegistry: join(outDir, "operator-registry.json"),
+    policyDecision: join(outDir, "policy-decision.json"),
+    policyBundle: join(outDir, "policy-bundle.json"),
+    registryEpoch: join(outDir, "registry-epoch.json"),
+    connectorManifest: join(outDir, "connector-manifest.json"),
+    supabaseRequest: join(outDir, "supabase-request.json"),
+    supabaseResultMetadata: join(outDir, "supabase-result-metadata.json")
+  };
+}
+
+function loadGatewayKeys(config) {
+  const keyDir = join(config.dataDir, "keys");
+  mkdirSync(keyDir, { recursive: true });
+  return {
+    gateway: loadOrCreateEd25519Signer({
+      keyFile: config.gateway.keyJson || config.gateway.privateKeyPem ? null : config.gateway.keyFile || join(keyDir, "gateway.key.json"),
+      keyId: config.gateway.keyId,
+      keyJson: config.gateway.keyJson,
+      privateKeyPem: config.gateway.privateKeyPem,
+      publicKeyPem: config.gateway.publicKeyPem
+    }),
+    tool: loadOrCreateEd25519Signer({ keyFile: join(keyDir, "supabase-tool.key.json"), keyId: "tool:supabase-mcp:supabase-mcp" }),
+    transparency: loadOrCreateEd25519Signer({ keyFile: join(keyDir, "supabase-transparency.key.json"), keyId: "transparency:supabase-mcp" })
+  };
+}
+
+async function createWitnessClients(specs, keyring, config, gatewaySigner) {
+  const witnesses = specs.map((spec) => new HttpWitnessClient({
+    ...spec,
+    signedRequests: config.witness.signedRequests.enabled ? {
+      enabled: true,
+      gatewayId: config.gateway.id,
+      gatewayKeyId: gatewaySigner.keyId,
+      gatewaySigner,
+      witnessId: spec.witnessId ?? spec.id,
+      witnessEpochId: spec.witnessEpochId || config.witness.signedRequests.witnessEpochId,
+      registryEpochId: spec.registryEpochId || config.witness.signedRequests.registryEpochId,
+      workflowId: spec.workflowId || config.witness.signedRequests.workflowId
+    } : null
+  }));
+  for (const witness of witnesses) {
+    const publicKey = await witness.publicKey();
+    witness.publicKeyInfo = publicKey;
+    keyring[publicKey.key_id] = publicKey.public_key_pem;
+  }
+  return witnesses;
+}
+
+function verifyConfiguredL1WitnessSetAuthority({ witnesses, registryBinding, policyHash, threshold }) {
+  const registryEpoch = registryBinding?.epoch || null;
+  const checks = witnesses.map((witness) => {
+    const publicKey = witness.publicKeyInfo || {};
+    const entry = (registryEpoch?.witnesses || []).find((candidate) => candidate.key_id === publicKey.key_id);
+    const errors = [];
+    if (!entry) {
+      errors.push(`witness key ${publicKey.key_id || witness.id} is not in registry epoch`);
+    } else {
+      if (entry.witness_id !== witness.id) errors.push(`witness_id mismatch: expected ${witness.id}, got ${entry.witness_id}`);
+      if (!(entry.authorized_workflows || []).includes(witness.signedRequests?.workflowId)) errors.push(`${entry.key_id} is not authorized for workflow ${witness.signedRequests?.workflowId}`);
+      if (!(entry.authorized_policy_hashes || []).includes(policyHash)) errors.push(`${entry.key_id} is not authorized for policy ${policyHash}`);
+      if (entry.tier !== "mechanical") errors.push(`witness tier must be mechanical, got ${entry.tier || "missing"}`);
+    }
+    return { witness_id: witness.id, witness_key_id: publicKey.key_id || null, ok: errors.length === 0, errors };
+  });
+  const authorized = checks.filter((check) => check.ok).length;
+  return { ok: authorized >= threshold, authorized, threshold, checks, errors: checks.flatMap((check) => check.errors.map((error) => `${check.witness_id}: ${error}`)) };
+}
+
+async function loadAndWriteRegistryBinding(config, registryEpochPath) {
+  if (!config.registry?.url) return null;
+  const binding = await fetchRegistryBinding(config.registry.url, registryPinOptions(config));
+  writeJson(registryEpochPath, {
+    registry_epoch: binding.epoch,
+    registry_epoch_digest: binding.epoch_digest,
+    registry_epoch_url: binding.epoch_url,
+    registry_trust_anchor: binding.trust_anchor,
+    fetched_registry_trust_anchor: binding.fetched_trust_anchor,
+    pinned: binding.pinned,
+    verification: binding.verification
+  });
+  return binding;
+}
+
+async function loadAndWriteOperatorRegistryBinding(config, operatorRegistryPath, admissionManifest) {
+  if (!config.registry?.url || !admissionManifest?.operator_signature?.operator_id) return null;
+  const binding = await fetchOperatorRegistryBinding(config.registry.url, admissionManifest.operator_signature.operator_id, registryPinOptions(config));
+  writeJson(operatorRegistryPath, binding);
+  return binding;
+}
+
+function createSignedSupabaseAdmissionManifest({ config, requestContext, policyBundle, policyHash, egressPolicy }) {
+  const tenantId = requestContext?.session?.tid || config.tenant.id;
+  const operatorSigner = loadOperatorAdmissionSigner(config);
+  const unsignedManifest = {
+    ...createAdmissionManifest({
+      manifestId: `adm_supabase_mcp_${tenantId}_v1`,
+      governanceId: "gov_supabase_mcp_v1",
+      policyHash,
+      agent: tinfoilEvidence(null, "mcp-agent", ["mcp://tools/*"], null),
+      gateway: tinfoilEvidence(config.attestation?.gateway, "supabase-gateway", ["strata://verified-actions/supabase.query"], egressPolicy),
+      verifier: tinfoilEvidence(null, "supabase-verifier", ["verify://local/supabase"], null),
+      approvedTools: [{ tool_id: "supabase-mcp", audience: "supabase-mcp", methods: ["MCP tools/call"] }],
+      approvedDataSources: [{ source_id: "supabase-hosted-mcp", origin: upstreamOrigin(config), project_ref: config.supabase.projectRef, read_only: config.supabase.readOnly }],
+      approvedModels: [],
+      witnessSetId: "witness-set.supabase-mcp.l1+l2",
+      witnessThreshold: config.witness.threshold
+    }),
+    workflow_id: "supabase.query",
+    tenant_id: tenantId,
+    operator_id: config.operator.id,
+    active_policy: {
+      policy_id: policyBundle.policy_id,
+      policy_epoch_id: policyBundle.epoch_id,
+      policy_bundle_version: policyBundle.version,
+      policy_bundle_digest: supabasePolicyBundleDigest(policyBundle),
+      policy_url: null
+    },
+    auth_context: admissionAuthContext(requestContext, tenantId)
+  };
+  return attachOperatorSignature(unsignedManifest, { signer: operatorSigner.signer, publicKeyPem: operatorSigner.publicKeyPem, operatorId: config.operator.id, tenantId });
+}
+
+function admissionAuthContext(requestContext, tenantId) {
+  const session = requestContext?.session;
+  if (!session) return { auth_method: "none", tenant_id: tenantId };
+  return { auth_method: session.auth_method || "mcp-session", tenant_id: session.tid || tenantId, client_id: session.aid || null, scope: session.scope || null };
+}
+
+function policyQuorumInput(policyQuorum) {
+  return {
+    type: "policy.quorum",
+    version: policyQuorum.version,
+    tier: "level-2-policy",
+    decision: policyQuorum.decision,
+    policy_id: policyQuorum.policy_id,
+    policy_epoch_id: policyQuorum.policy_epoch_id,
+    policy_bundle_digest: policyQuorum.policy_bundle_digest,
+    threshold: policyQuorum.threshold,
+    allow_count: policyQuorum.allow_count,
+    deny_count: policyQuorum.deny_count,
+    total_witnesses: policyQuorum.total_witnesses,
+    decision_digests: policyQuorum.decisions.map((decision) => digestValue({ subject: decision.subject, signature: decision.signature }))
+  };
+}
+
+function verifyPolicyBundleForQuorum(policyBundle, policyQuorum) {
+  const errors = [];
+  const policyBundleDigestValue = policyBundle ? supabasePolicyBundleDigest(policyBundle) : null;
+  if (!policyBundle) errors.push("policy bundle artifact missing");
+  if (policyBundleDigestValue !== policyQuorum.policy_bundle_digest) errors.push(`policy bundle digest mismatch: bundle=${policyBundleDigestValue} quorum=${policyQuorum.policy_bundle_digest}`);
+  if (policyBundle?.epoch_id !== policyQuorum.policy_epoch_id) errors.push(`policy epoch mismatch: bundle=${policyBundle?.epoch_id} quorum=${policyQuorum.policy_epoch_id}`);
+  return { ok: errors.length === 0, errors, policy_id: policyBundle?.policy_id || null, policy_epoch_id: policyBundle?.epoch_id || null, policy_bundle_digest: policyBundleDigestValue };
+}
+
+function verifyRegistryAuthority({ receipts, checkpoint, keyring, policyQuorum, registryBinding }) {
+  const trustAnchors = { [registryBinding.trust_anchor.key_id]: registryBinding.trust_anchor.public_key_pem };
+  const l1Mechanical = verifyWitnessAuthority({ receipts, checkpoint, keyring, registryEpoch: registryBinding.epoch, trustAnchors, workflowId: "supabase.query", policyHash: policyQuorum.policy_bundle_digest, requiredTier: "mechanical" });
+  const l2Policy = verifyPolicyQuorumAuthority({ policyQuorum, registryEpoch: registryBinding.epoch, workflowId: "supabase.query", policyHash: policyQuorum.policy_bundle_digest, requiredTier: "policy" });
+  const errors = [...registryBinding.verification.errors.map((error) => `registry epoch: ${error}`), ...l1Mechanical.errors.map((error) => `l1 mechanical: ${error}`), ...l2Policy.errors.map((error) => `l2 policy: ${error}`)];
+  return { ok: errors.length === 0, errors, registry_epoch_digest: registryBinding.epoch_digest, registry_epoch_id: registryBinding.epoch.epoch_id, registry_epoch_url: registryBinding.epoch_url, registry_authority_key_id: registryBinding.trust_anchor.key_id, l1_mechanical: l1Mechanical, l2_policy: l2Policy };
+}
+
+function operatorIdentityCertificateBinding(admissionManifest, { operatorRegistryBinding = null } = {}) {
+  const verification = verifyOperatorAdmissionManifest(admissionManifest, { operatorRegistryBinding });
+  const operatorRecord = operatorRegistryBinding?.operator_record || null;
+  return {
+    version: "strata.operator_identity_binding.v1",
+    tenant_id: verification.tenant_id,
+    operator_id: verification.operator_id,
+    operator_key_id: verification.operator_key_id,
+    operator_registry_url: verification.operator_registry_url,
+    operator_registry_record_digest: verification.operator_registry_record_digest,
+    registry_authority_key_id: verification.operator_registry_authority_key_id,
+    admission_manifest_digest: verification.signed_manifest_digest,
+    admission_signed_at: verification.signed_at,
+    workflow_id: "supabase.query",
+    tool_id: "supabase-mcp",
+    policy_hash: verification.policy_hash,
+    authorized_workflows: operatorRecord?.authorized_workflows || [],
+    authorized_tools: operatorRecord?.authorized_tools || [],
+    authorized_policy_hashes: operatorRecord?.authorized_policy_hashes || [],
+    status_at_action_time: operatorRecord?.status || null,
+    registry_authorized: verification.registry_authorized,
+    signature_verified: verification.ok
+  };
+}
+
+function registryCertificateBinding(registryBinding) {
+  if (!registryBinding) return null;
+  return { registry_epoch_id: registryBinding.epoch.epoch_id, registry_epoch_digest: registryBinding.epoch_digest, registry_epoch_url: registryBinding.epoch_url, registry_authority_key_id: registryBinding.trust_anchor.key_id, policy_bundle_digest: registryBinding.epoch.policy_bundle_digest, policy_bundle_url: registryBinding.epoch.policy_bundle_url || null, pinned: registryBinding.pinned || null };
+}
+
+function authorityPins(config, registryBinding, policyBundle) {
+  const policyDigest = policyBundle ? supabasePolicyBundleDigest(policyBundle) : null;
+  return {
+    registry_epoch: { expected_digest: config.registry?.expectedEpochDigest || null, actual_digest: registryBinding?.epoch_digest || null, pinned: Boolean(config.registry?.expectedEpochDigest), matched: config.registry?.expectedEpochDigest ? config.registry.expectedEpochDigest === registryBinding?.epoch_digest : null },
+    registry_trust_anchor: { expected_key_id: config.registry?.trustAnchorKeyId || null, actual_key_id: registryBinding?.trust_anchor?.key_id || null, pinned: Boolean(config.registry?.trustAnchorKeyId && config.registry?.trustAnchorPublicKeyPem), matched: config.registry?.trustAnchorKeyId ? config.registry.trustAnchorKeyId === registryBinding?.trust_anchor?.key_id : null },
+    policy_bundle: { expected_digest: null, actual_digest: policyDigest, pinned: false, matched: null }
+  };
+}
+
+async function publishDurableBundle(config, { runId, runDir, certificateDigest }) {
+  const location = createDurableBundleLocation(config, { runId, certificateDigest });
+  if (!location) return null;
+  const publication = { ...location, status: "published" };
+  const bundle = loadCertificateBundle({ config, runId, runDir, bundleUrl: publication.bundle_url, durablePublication: publication });
+  return publishCertificateBundle(config, { runId, certificateDigest, bundle, durablePublication: publication });
+}
+
+function createEgressPolicy(config) {
+  const allowedUrls = [...config.witnesses, ...config.policyWitnesses].map((witness) => witness.url);
+  if (config.registry?.url) allowedUrls.push(config.registry.url);
+  if (config.supabase.mcpBaseUrl) allowedUrls.push(upstreamOrigin(config));
+  return { mode: "supabase-mcp-readonly-witness-and-registry-urls-only", allowed_urls: allowedUrls.sort(), enforcement: "application-code-typed-adapters" };
+}
+
+function tinfoilEvidence(evidence, containerName, shimPaths, egressPolicy) {
+  return createTinfoilEvidence({
+    containerName: evidence?.containerName || containerName,
+    imageDigest: evidence?.imageDigest || `sha256:${sha256Hex(`supabase-mcp:${containerName}`)}`,
+    configHash: evidence?.attestationDigest || sha256Hex(`supabase-mcp-config:${containerName}`),
+    attestationRef: evidence?.attestationRef || evidence?.attestationUrl || `demo://supabase-mcp/${containerName}/attestation-placeholder`,
+    sigstoreBundleRef: evidence?.sigstoreBundleRef || null,
+    shimPaths,
+    egressPolicy
+  });
+}
+
+function registryPinOptions(config) {
+  return { expectedEpochDigest: config.registry?.expectedEpochDigest || "", trustAnchorKeyId: config.registry?.trustAnchorKeyId || "", trustAnchorPublicKeyPem: config.registry?.trustAnchorPublicKeyPem || "" };
 }
 
 function supabaseClientHints(config) {
@@ -489,6 +856,13 @@ function publicArtifactUrls(config, runId) {
   return {
     certificate: `${config.certificateBaseUrl}/${runId}`,
     bundle: `${config.certificateBaseUrl}/${runId}/bundle`,
+    receipts: `${base}/receipts.jsonl`,
+    keyring: `${base}/keyring.json`,
+    checkpoint: `${base}/checkpoint.json`,
+    transparency_log: `${base}/transparency-log.jsonl`,
+    admission_manifest: `${base}/admission-manifest.json`,
+    operator_registry: `${base}/operator-registry.json`,
+    registry_epoch: `${base}/registry-epoch.json`,
     connector_manifest: `${base}/connector-manifest.json`,
     policy_bundle: `${base}/policy-bundle.json`,
     policy_decision: `${base}/policy-decision.json`,

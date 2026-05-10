@@ -79,8 +79,9 @@ export function verifyOperatorAdmissionManifest(manifest, { operatorRegistryBind
     if (!operatorRecord.authorized_policy_hashes?.includes(manifest.policy_hash)) {
       errors.push(`operator registry key is not authorized for policy ${manifest.policy_hash}`);
     }
-    if (!operatorRecord.authorized_workflows?.includes("email.send")) {
-      errors.push("operator registry key is not authorized for workflow email.send");
+    const workflowId = manifest.workflow_id || "email.send";
+    if (!operatorRecord.authorized_workflows?.includes(workflowId)) {
+      errors.push(`operator registry key is not authorized for workflow ${workflowId}`);
     }
     if (operatorRecord.status !== "active") {
       errors.push(`operator registry key status is ${operatorRecord.status}`);

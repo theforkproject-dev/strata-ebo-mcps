@@ -373,6 +373,47 @@ function verifySupabaseCertificateBundle(bundle, { sourceUrl = "" } = {}) {
       receipt_count: (bundle.receipts || []).length,
       checkpoint_present: Boolean(bundle.checkpoint)
     });
+    const keyring = bundle.keyring || {};
+    const transparencyLog = bundle.transparency_log || [];
+    const session = verifySession(bundle.receipts || [], keyring, {
+      transparencyLogEntries: transparencyLog,
+      requireAdmissionManifest: true,
+      requireSideEffectQuorum: !certificate.denied,
+      requireBoundaryQuorum: true,
+      requireTransparencyLog: true
+    });
+    add(checks, "supabase.receipt_chain.session", session.ok, { errors: session.errors });
+    const checkpoint = verifyCheckpoint(bundle.checkpoint, bundle.receipts || [], keyring, {
+      transparencyLogEntries: transparencyLog,
+      requireCheckpointQuorum: true,
+      requireCheckpointTransparency: true
+    });
+    add(checks, "supabase.receipt_chain.checkpoint", checkpoint.ok, { errors: checkpoint.errors });
+    if (bundle.registry_epoch?.registry_epoch && bundle.registry_epoch?.registry_trust_anchor) {
+      const registryEpoch = bundle.registry_epoch.registry_epoch;
+      const trustAnchors = { [bundle.registry_epoch.registry_trust_anchor.key_id]: bundle.registry_epoch.registry_trust_anchor.public_key_pem };
+      const l1Authority = verifyWitnessAuthority({
+        receipts: bundle.receipts || [],
+        checkpoint: bundle.checkpoint,
+        keyring,
+        registryEpoch,
+        trustAnchors,
+        workflowId: "supabase.query",
+        policyHash: certificate.policy?.policy_bundle_digest,
+        requiredTier: "mechanical"
+      });
+      add(checks, "supabase.registry.l1_witness_authority", l1Authority.ok, { errors: l1Authority.errors });
+      const l2Authority = verifyPolicyQuorumAuthority({
+        policyQuorum: policyDecision,
+        registryEpoch,
+        workflowId: "supabase.query",
+        policyHash: certificate.policy?.policy_bundle_digest,
+        requiredTier: "policy"
+      });
+      add(checks, "supabase.registry.l2_policy_authority", l2Authority.ok, { errors: l2Authority.errors });
+    } else {
+      add(checks, "supabase.registry.artifact_present", false, { registry_epoch: Boolean(bundle.registry_epoch?.registry_epoch), trust_anchor: Boolean(bundle.registry_epoch?.registry_trust_anchor) });
+    }
   }
 
   return result({

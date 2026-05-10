@@ -25,7 +25,7 @@ const policyUrl = process.env.POLICY_BUNDLE_URL || `${config.publicBaseUrl}/poli
 const policyDigest = policyBundleDigest(policyBundle);
 const supabasePolicy = defaultSupabasePolicyBundleMetadata(config, process.env.SUPABASE_POLICY_BUNDLE_URL || "");
 const authorizedWorkflows = parseCsv(process.env.REGISTRY_AUTHORIZED_WORKFLOWS || "email.send,supabase.query");
-const authorizedTools = parseCsv(process.env.REGISTRY_AUTHORIZED_TOOLS || "email_send_verified,supabase_list_tables_verified,supabase_inspect_schema_verified,supabase_query_readonly_verified,supabase_search_docs");
+const authorizedTools = parseCsv(process.env.REGISTRY_AUTHORIZED_TOOLS || "email_send_verified,supabase-mcp,supabase_list_tables_verified,supabase_inspect_schema_verified,supabase_query_readonly_verified,supabase_search_docs");
 const registryAuthoritySigner = { keyId: signer.signer.keyId, privateKey: signer.signer.privateKey, publicKeyPem: signer.publicKeyPem };
 
 const server = createServer(async (request, response) => {
