@@ -584,9 +584,9 @@ async function createWitnessClients(specs, keyring, config, gatewaySigner) {
       gatewayKeyId: gatewaySigner.keyId,
       gatewaySigner,
       witnessId: spec.witnessId ?? spec.id,
-      witnessEpochId: spec.witnessEpochId || config.witness.signedRequests.witnessEpochId,
-      registryEpochId: spec.registryEpochId || config.witness.signedRequests.registryEpochId,
-      workflowId: spec.workflowId || config.witness.signedRequests.workflowId
+      witnessEpochId: witnessEpochIdForSpec({ spec, config }),
+      registryEpochId: registryEpochIdForSpec({ spec, config }),
+      workflowId: workflowIdForSpec({ spec, config })
     } : null
   }));
   for (const witness of witnesses) {
@@ -595,6 +595,22 @@ async function createWitnessClients(specs, keyring, config, gatewaySigner) {
     keyring[publicKey.key_id] = publicKey.public_key_pem;
   }
   return witnesses;
+}
+
+function l1WitnessEvidenceForSpec({ spec, config }) {
+  return (config.attestation?.l1Witnesses || []).find((item) => item.witnessId === spec.id || item.witnessId === spec.witnessId);
+}
+
+function witnessEpochIdForSpec({ spec, config }) {
+  return spec.witnessEpochId || l1WitnessEvidenceForSpec({ spec, config })?.witnessEpochId || config.witness.signedRequests.witnessEpochId;
+}
+
+function registryEpochIdForSpec({ spec, config }) {
+  return spec.registryEpochId || l1WitnessEvidenceForSpec({ spec, config })?.registryEpochId || config.witness.signedRequests.registryEpochId;
+}
+
+function workflowIdForSpec({ spec, config }) {
+  return spec.workflowId || l1WitnessEvidenceForSpec({ spec, config })?.workflowId || config.witness.signedRequests.workflowId;
 }
 
 function verifyConfiguredL1WitnessSetAuthority({ witnesses, registryBinding, policyHash, threshold }) {
