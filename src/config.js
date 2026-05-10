@@ -184,7 +184,14 @@ export function parseWitnessUrls(value, prefix = "w") {
     if (eq === -1) {
       return { id: `${prefix}${index + 1}`, url: item };
     }
-    return { id: item.slice(0, eq).trim(), url: item.slice(eq + 1).trim() };
+    const [id, witnessEpochId = "", registryEpochId = "", workflowId = ""] = item.slice(0, eq).trim().split("|").map((part) => part.trim());
+    return {
+      id,
+      url: item.slice(eq + 1).trim(),
+      witnessEpochId,
+      registryEpochId,
+      workflowId
+    };
   }).filter((item) => item.id && item.url);
 }
 
