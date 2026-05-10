@@ -787,10 +787,17 @@ function tinfoilEvidence(evidence, containerName, shimPaths, egressPolicy) {
     imageDigest: evidence?.imageDigest || `sha256:${sha256Hex(`supabase-mcp:${containerName}`)}`,
     configHash: evidence?.attestationDigest || sha256Hex(`supabase-mcp-config:${containerName}`),
     attestationRef: evidence?.attestationRef || evidence?.attestationUrl || `demo://supabase-mcp/${containerName}/attestation-placeholder`,
-    sigstoreBundleRef: evidence?.sigstoreBundleRef || null,
+    sigstoreBundleRef: evidence?.sigstoreBundleRef || tinfoilReleaseRef(evidence) || `sigstore://supabase-mcp/${containerName}`,
     shimPaths,
     egressPolicy
   });
+}
+
+function tinfoilReleaseRef(evidence) {
+  if (!evidence?.configRepo || !evidence?.configTag) {
+    return null;
+  }
+  return `https://github.com/${evidence.configRepo}/releases/tag/${evidence.configTag}`;
 }
 
 function registryPinOptions(config) {
