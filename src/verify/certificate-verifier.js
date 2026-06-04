@@ -8,11 +8,17 @@ import {
 } from "../strata/primitives.js";
 import { policyBundleDigest, verifyPolicyQuorumAuthority } from "../policy/email-policy.js";
 import { SUPABASE_POLICY_BUNDLE_VERSION, SUPABASE_POLICY_QUORUM_VERSION, supabasePolicyBundleDigest } from "../policy/supabase-policy.js";
+import { KOJIMEM_POLICY_BUNDLE_VERSION, KOJIMEM_POLICY_QUORUM_VERSION, kojimemPolicyBundleDigest } from "../policy/kojimem-policy.js";
 import {
   SUPABASE_ACTION_CERTIFICATE_VERSION,
   SUPABASE_CONNECTOR_MANIFEST_VERSION,
   SUPABASE_POLICY_DECISION_VERSION
 } from "../supabase/canonical.js";
+import {
+  KOJIMEM_ACTION_CERTIFICATE_VERSION,
+  KOJIMEM_REQUEST_VERSION,
+  KOJIMEM_WORKFLOW_ID
+} from "../kojimem/canonical.js";
 import { verifyOperatorRegistryRecord } from "../registry/email-registry.js";
 import { verifyOperatorAdmissionManifest } from "../admission/operator-manifest.js";
 import { Verifier, hashAttestationDocument } from "@tinfoilsh/verifier";
@@ -23,6 +29,9 @@ const SUPABASE_CERTIFICATE_BUNDLE_VERSION = "strata.supabase.certificate_bundle.
 const SUPABASE_POLICY_DENIAL_CERTIFICATE_VERSION = "strata.supabase.policy_denial_certificate.v1";
 const SUPABASE_REQUEST_VERSION = "strata.supabase.request.v1";
 const SUPABASE_RESULT_SUMMARY_VERSION = "strata.supabase.result_summary.v1";
+const KOJIMEM_CERTIFICATE_BUNDLE_VERSION = "strata.kojimem.certificate_bundle.v1";
+const KOJIMEM_POLICY_DENIAL_CERTIFICATE_VERSION = "strata.kojimem.policy_denial_certificate.v1";
+const KOJIMEM_CONNECTOR_MANIFEST_VERSION = "strata.kojimem.connector_manifest.v1";
 
 export async function verifyCertificateBundleUrl(bundleUrl) {
   const normalizedUrl = normalizeBundleUrl(bundleUrl);
@@ -44,6 +53,9 @@ export function normalizeBundleUrl(value) {
 export async function verifyCertificateBundle(bundle, { sourceUrl = "" } = {}) {
   if (bundle?.version === SUPABASE_CERTIFICATE_BUNDLE_VERSION || String(bundle?.certificate?.version || "").startsWith("strata.supabase.")) {
     return verifySupabaseCertificateBundle(bundle, { sourceUrl });
+  }
+  if (bundle?.version === KOJIMEM_CERTIFICATE_BUNDLE_VERSION || String(bundle?.certificate?.version || "").startsWith("strata.kojimem.")) {
+    return verifyKojimemCertificateBundle(bundle, { sourceUrl });
   }
   return verifyEmailCertificateBundle(bundle, { sourceUrl });
 }
@@ -435,6 +447,264 @@ function verifySupabaseCertificateBundle(bundle, { sourceUrl = "" } = {}) {
   });
 }
 
+function verifyKojimemCertificateBundle(bundle, { sourceUrl = "" } = {}) {
+  const checks = [];
+  const certificate = bundle.certificate;
+  const connectorManifest = bundle.connector_manifest;
+  const request = bundle.kojimem_request;
+  const policyDecision = bundle.policy_decision;
+  const policyEvidence = kojimemPolicyEvidence(policyDecision);
+  const policyBundle = bundle.policy_bundle;
+  const resultMetadata = bundle.kojimem_result_metadata;
+  const verification = bundle.verification;
+
+  add(checks, "bundle.version", bundle.version === KOJIMEM_CERTIFICATE_BUNDLE_VERSION, {
+    expected: KOJIMEM_CERTIFICATE_BUNDLE_VERSION,
+    actual: bundle.version
+  });
+  add(checks, "certificate.present", Boolean(certificate), {});
+  if (!certificate) {
+    return result({ sourceUrl, certificate: null, checks });
+  }
+
+  add(checks, "certificate.version", [KOJIMEM_ACTION_CERTIFICATE_VERSION, KOJIMEM_POLICY_DENIAL_CERTIFICATE_VERSION].includes(certificate.version), {
+    expected: [KOJIMEM_ACTION_CERTIFICATE_VERSION, KOJIMEM_POLICY_DENIAL_CERTIFICATE_VERSION],
+    actual: certificate.version
+  });
+  add(checks, "certificate.digest", digestValue(withoutDigest(certificate)) === certificate.certificate_digest, {
+    expected: certificate.certificate_digest,
+    actual: digestValue(withoutDigest(certificate))
+  });
+  verifyDurablePublication(checks, bundle, sourceUrl);
+
+  add(checks, "kojimem.connector_manifest.present", Boolean(connectorManifest), {});
+  if (connectorManifest) {
+    const manifestDigest = digestValue(connectorManifest);
+    const manifestTool = (connectorManifest.tools || []).find((tool) => tool.strata_tool === certificate.action?.mcp_tool_name);
+    add(checks, "kojimem.connector_manifest.version", connectorManifest.version === KOJIMEM_CONNECTOR_MANIFEST_VERSION, {
+      expected: KOJIMEM_CONNECTOR_MANIFEST_VERSION,
+      actual: connectorManifest.version || null
+    });
+    add(checks, "kojimem.connector_manifest.digest", manifestDigest === certificate.connector?.connector_manifest_digest, {
+      expected: certificate.connector?.connector_manifest_digest || null,
+      actual: manifestDigest
+    });
+    add(checks, "kojimem.connector_manifest.tool_mapping", Boolean(manifestTool) && manifestTool.gateway_tool === certificate.action?.gateway_tool_name, {
+      strata_tool: certificate.action?.mcp_tool_name || null,
+      expected_gateway_tool: certificate.action?.gateway_tool_name || null,
+      actual_gateway_tool: manifestTool?.gateway_tool || null
+    });
+    add(checks, "kojimem.connector_binding.connector", connectorManifest.connector_id === certificate.connector?.connector_id && connectorManifest.connector_type === certificate.connector?.connector_type, {
+      manifest_connector_id: connectorManifest.connector_id || null,
+      certificate_connector_id: certificate.connector?.connector_id || null,
+      manifest_connector_type: connectorManifest.connector_type || null,
+      certificate_connector_type: certificate.connector?.connector_type || null
+    });
+    add(checks, "kojimem.connector_binding.wallets", connectorManifest.agents?.originator?.wallet === certificate.connector?.agent_a_wallet && connectorManifest.agents?.delegate?.wallet === certificate.connector?.agent_b_wallet, {
+      manifest_agent_a_wallet: connectorManifest.agents?.originator?.wallet || null,
+      certificate_agent_a_wallet: certificate.connector?.agent_a_wallet || null,
+      manifest_agent_b_wallet: connectorManifest.agents?.delegate?.wallet || null,
+      certificate_agent_b_wallet: certificate.connector?.agent_b_wallet || null
+    });
+  }
+
+  add(checks, "kojimem.request.present", Boolean(request), {});
+  if (request) {
+    const requestDigest = digestValue(request);
+    add(checks, "kojimem.request.version", request.version === KOJIMEM_REQUEST_VERSION, {
+      expected: KOJIMEM_REQUEST_VERSION,
+      actual: request.version || null
+    });
+    add(checks, "kojimem.request.redacted_artifact_binding", requestDigest === digestValue(certificate.request?.redacted || {}), {
+      certificate_redacted_digest: digestValue(certificate.request?.redacted || {}),
+      actual: requestDigest
+    });
+    add(checks, "kojimem.request.full_digest_binding", certificate.request?.request_digest === policyEvidence.request_digest && certificate.request?.request_digest === certificate.request?.public_commitment?.request_digest, {
+      certificate_request_digest: certificate.request?.request_digest || null,
+      policy_request_digest: policyEvidence.request_digest || null,
+      public_commitment_request_digest: certificate.request?.public_commitment?.request_digest || null
+    });
+    add(checks, "kojimem.request.workflow", request.workflow_id === KOJIMEM_WORKFLOW_ID && certificate.action?.workflow_id === KOJIMEM_WORKFLOW_ID, {
+      request_workflow_id: request.workflow_id || null,
+      certificate_workflow_id: certificate.action?.workflow_id || null
+    });
+    add(checks, "kojimem.request.digest_only_facts", !request.execution?.facts && !request.execution?.recall_question && Boolean(request.backpack?.facts_digest) && Boolean(request.recall?.question_digest), {
+      raw_facts_present: Boolean(request.execution?.facts),
+      raw_question_present: Boolean(request.execution?.recall_question),
+      facts_digest: request.backpack?.facts_digest || null,
+      question_digest: request.recall?.question_digest || null
+    });
+  }
+
+  add(checks, "kojimem.policy_bundle.present", Boolean(policyBundle), {});
+  if (policyBundle) {
+    const policyDigest = kojimemPolicyBundleDigest(policyBundle);
+    add(checks, "kojimem.policy_bundle.version", policyBundle.version === KOJIMEM_POLICY_BUNDLE_VERSION, {
+      expected: KOJIMEM_POLICY_BUNDLE_VERSION,
+      actual: policyBundle.version || null
+    });
+    add(checks, "kojimem.policy_bundle.digest", policyDigest === certificate.policy?.policy_bundle_digest && policyDigest === policyEvidence.policy_bundle_digest, {
+      certificate_policy_bundle_digest: certificate.policy?.policy_bundle_digest || null,
+      policy_decision_policy_bundle_digest: policyEvidence.policy_bundle_digest || null,
+      actual: policyDigest
+    });
+    add(checks, "kojimem.policy_bundle.identity", policyBundle.policy_id === certificate.policy?.policy_id && policyBundle.policy_id === policyEvidence.policy_id && policyBundle.epoch_id === certificate.policy?.policy_epoch_id && policyBundle.epoch_id === policyEvidence.policy_epoch_id, {
+      policy_id: policyBundle.policy_id || null,
+      certificate_policy_id: certificate.policy?.policy_id || null,
+      policy_decision_policy_id: policyEvidence.policy_id || null,
+      policy_epoch_id: policyBundle.epoch_id || null,
+      certificate_policy_epoch_id: certificate.policy?.policy_epoch_id || null,
+      policy_decision_policy_epoch_id: policyEvidence.policy_epoch_id || null
+    });
+  }
+
+  add(checks, "kojimem.policy_decision.present", Boolean(policyDecision), {});
+  if (policyDecision) {
+    const failedRules = (policyEvidence.rule_results || []).filter((item) => item.pass !== true);
+    add(checks, "kojimem.policy_decision.version", policyDecision.version === KOJIMEM_POLICY_QUORUM_VERSION, {
+      expected: KOJIMEM_POLICY_QUORUM_VERSION,
+      actual: policyDecision.version || null
+    });
+    add(checks, "kojimem.policy_decision.result", policyEvidence.decision === certificate.policy?.decision && sameArray(policyEvidence.reasons || [], certificate.policy?.reasons || []), {
+      policy_decision: policyEvidence.decision || null,
+      certificate_decision: certificate.policy?.decision || null,
+      policy_reasons: policyEvidence.reasons || [],
+      certificate_reasons: certificate.policy?.reasons || []
+    });
+    add(checks, "kojimem.policy_decision.rule_consistency", policyEvidence.decision === "allow" ? failedRules.length === 0 : failedRules.length > 0, {
+      decision: policyEvidence.decision || null,
+      failed_rules: failedRules.map((item) => item.rule)
+    });
+    add(checks, "kojimem.policy_quorum.threshold", policyEvidence.allow_count >= policyEvidence.threshold === (policyEvidence.decision === "allow"), {
+      allow_count: policyEvidence.allow_count,
+      threshold: policyEvidence.threshold,
+      decision: policyEvidence.decision || null
+    });
+    add(checks, "kojimem.policy_quorum.signatures_present", (policyDecision.decisions || []).every((decision) => decision.subject && decision.signature?.signature), {
+      decision_count: (policyDecision.decisions || []).length
+    });
+    add(checks, "kojimem.policy_quorum.certificate_binding", sameArray(policyEvidence.decision_digests || [], certificate.policy?.decision_digests || []), {
+      expected: certificate.policy?.decision_digests || [],
+      actual: policyEvidence.decision_digests || []
+    });
+  }
+
+  add(checks, "kojimem.verification.present", Boolean(verification), {});
+  if (verification) {
+    const verificationPolicyDecision = verification.policy?.decision || policyEvidence.decision || null;
+    const verificationPolicyOk = verification.policy?.ok ?? (policyEvidence.decision === "allow");
+    add(checks, "kojimem.verification.policy", verificationPolicyDecision === certificate.policy?.decision && verificationPolicyOk === (certificate.policy?.decision === "allow"), {
+      verification_policy: verification.policy || null,
+      certificate_policy_decision: certificate.policy?.decision || null
+    });
+    add(checks, "kojimem.verification.ok", verification.ok === certificate.proof?.verified, {
+      verification_ok: verification.ok ?? null,
+      proof_verified: certificate.proof?.verified ?? null
+    });
+    const executionOk = verification.execution?.ok ?? (resultMetadata?.status === "completed");
+    add(checks, "kojimem.proof.side_effect", certificate.proof?.side_effect_executed === (!certificate.denied && executionOk === true), {
+      side_effect_executed: certificate.proof?.side_effect_executed ?? null,
+      denied: certificate.denied === true,
+      execution_ok: executionOk
+    });
+  }
+
+  add(checks, "kojimem.result_metadata.present", Boolean(resultMetadata), {});
+  if (resultMetadata) {
+    add(checks, "kojimem.result_metadata.certificate_binding", digestValue(resultMetadata) === digestValue(certificate.result || {}), {
+      certificate_result_digest: digestValue(certificate.result || {}),
+      artifact_result_digest: digestValue(resultMetadata)
+    });
+    add(checks, "kojimem.result_metadata.destroyed", resultMetadata.destroyed === true || certificate.denied === true, {
+      destroyed: resultMetadata.destroyed ?? null,
+      denied: certificate.denied === true
+    });
+    add(checks, "kojimem.result_metadata.settlement", resultMetadata.settlement?.protocol === "x402" && resultMetadata.settlement?.asset === "USDC", {
+      protocol: resultMetadata.settlement?.protocol || null,
+      asset: resultMetadata.settlement?.asset || null
+    });
+    add(checks, "kojimem.result_metadata.delegation", Boolean(resultMetadata.delegation_hash) && sameArray(resultMetadata.delegation_scope || [], ["destroy", "recall"]), {
+      delegation_hash: resultMetadata.delegation_hash || null,
+      delegation_scope: resultMetadata.delegation_scope || []
+    });
+  }
+
+  const keyring = bundle.keyring || {};
+  const transparencyLog = bundle.transparency_log || [];
+  add(checks, "kojimem.receipt_profile.witnessed", (bundle.receipts || []).length > 0 && Boolean(bundle.checkpoint), {
+    assurance_mode: certificate.proof?.assurance_mode || null,
+    receipt_count: (bundle.receipts || []).length,
+    checkpoint_present: Boolean(bundle.checkpoint)
+  });
+  const session = verifySession(bundle.receipts || [], keyring, {
+    transparencyLogEntries: transparencyLog,
+    requireAdmissionManifest: true,
+    requireSideEffectQuorum: !certificate.denied,
+    requireBoundaryQuorum: true,
+    requireTransparencyLog: true
+  });
+  add(checks, "kojimem.receipt_chain.session", session.ok, { errors: session.errors });
+  const checkpoint = verifyCheckpoint(bundle.checkpoint, bundle.receipts || [], keyring, {
+    transparencyLogEntries: transparencyLog,
+    requireCheckpointQuorum: true,
+    requireCheckpointTransparency: true
+  });
+  add(checks, "kojimem.receipt_chain.checkpoint", checkpoint.ok, { errors: checkpoint.errors });
+
+  if (bundle.registry_epoch?.registry_epoch && bundle.registry_epoch?.registry_trust_anchor) {
+    const registryEpoch = bundle.registry_epoch.registry_epoch;
+    const trustAnchors = { [bundle.registry_epoch.registry_trust_anchor.key_id]: bundle.registry_epoch.registry_trust_anchor.public_key_pem };
+    const l1Authority = verifyWitnessAuthority({
+      receipts: bundle.receipts || [],
+      checkpoint: bundle.checkpoint,
+      keyring,
+      registryEpoch,
+      trustAnchors,
+      workflowId: KOJIMEM_WORKFLOW_ID,
+      policyHash: certificate.policy?.policy_bundle_digest,
+      requiredTier: "mechanical"
+    });
+    add(checks, "kojimem.registry.l1_witness_authority", l1Authority.ok, { errors: l1Authority.errors });
+    const l2Authority = verifyPolicyQuorumAuthority({
+      policyQuorum: policyDecision,
+      registryEpoch,
+      workflowId: KOJIMEM_WORKFLOW_ID,
+      policyHash: certificate.policy?.policy_bundle_digest,
+      requiredTier: "policy"
+    });
+    add(checks, "kojimem.registry.l2_policy_authority", l2Authority.ok, { errors: l2Authority.errors });
+  } else {
+    warn(checks, "kojimem.registry.artifact_present", "Kojimem bundle profile v0.1 does not include registry epoch artifacts; L1/L2 signed evidence and policy quorum are still verified from bundle artifacts.");
+  }
+  if (!bundle.operator_registry) {
+    warn(checks, "kojimem.operator_registry.artifact_present", "Kojimem bundle profile v0.1 does not include operator registry artifacts; admission manifest signature is verified by receipt-chain checks.");
+  }
+  if (!bundle.gateway_attestation) {
+    warn(checks, "kojimem.gateway_attestation.artifact_present", "Kojimem bundle profile v0.1 does not include observed gateway attestation artifacts; use the gateway's Tinfoil config repo release for runtime attestation verification.");
+  }
+  if (!bundle.l1_witness_attestations) {
+    warn(checks, "kojimem.l1_attestation.artifact_present", "Kojimem bundle profile v0.1 does not include observed L1 attestation artifacts; witness signatures are verified through the receipt chain.");
+  }
+
+  return result({
+    sourceUrl,
+    certificate: {
+      url: certificate.certificate_url,
+      digest: certificate.certificate_digest,
+      issued_at: certificate.issued_at,
+      action: certificate.action,
+      connector: certificate.connector || null,
+      request: certificate.request || null,
+      policy: certificate.policy,
+      proof: certificate.proof,
+      result: certificate.result || null,
+      durable_publication: bundle.durable_publication || null
+    },
+    evidence: buildKojimemEvidenceSummary(bundle, certificate),
+    checks
+  });
+}
+
 export function renderMarkdownReport(report) {
   const verdict = report.ok ? "VALID" : "INVALID";
   const lines = [
@@ -620,6 +890,62 @@ function buildSupabaseEvidenceSummary(bundle, certificate) {
   };
 }
 
+function buildKojimemEvidenceSummary(bundle, certificate) {
+  const result = certificate.result || {};
+  return {
+    action: {
+      tool: certificate.action?.mcp_tool_name || null,
+      workflow_id: certificate.action?.workflow_id || null,
+      method: certificate.action?.method || null,
+      side_effect_executed: certificate.proof?.side_effect_executed === true
+    },
+    connector: certificate.connector ? {
+      connector_id: certificate.connector.connector_id || null,
+      connector_type: certificate.connector.connector_type || null,
+      api_base_url: certificate.connector.api_base_url || null,
+      network: certificate.connector.network || null,
+      agent_a_wallet: certificate.connector.agent_a_wallet || null,
+      agent_b_wallet: certificate.connector.agent_b_wallet || null,
+      connector_manifest_digest: certificate.connector.connector_manifest_digest || null
+    } : null,
+    l1: {
+      quorum: certificate.proof?.mechanical_witness_quorum || null,
+      witness_count: Number(String(certificate.proof?.mechanical_witness_quorum || "0-of-0").split("-of-")[1] || 0),
+      observed_attestation_count: 0,
+      receipt_count: (bundle.receipts || []).length,
+      checkpoint_present: Boolean(bundle.checkpoint)
+    },
+    l2: {
+      policy_decision: certificate.policy?.decision || null,
+      policy_witness_quorum: certificate.policy?.policy_witness_quorum || null,
+      policy_epoch_id: certificate.policy?.policy_epoch_id || null,
+      policy_bundle_digest: certificate.policy?.policy_bundle_digest || null,
+      tier: certificate.policy?.tier || null
+    },
+    gateway: null,
+    operator: certificate.session ? {
+      operator_id: certificate.session.operator_id || null,
+      tenant_id: certificate.session.tenant_id || null,
+      assistant_id: certificate.session.assistant_id || null
+    } : null,
+    backpack: {
+      memory_id: result.memory_id || null,
+      delegation_hash: result.delegation_hash || null,
+      delegation_scope: result.delegation_scope || [],
+      destroyed: result.destroyed === true
+    },
+    settlement: result.settlement || null,
+    durable_publication: bundle.durable_publication ? {
+      backend: bundle.durable_publication.backend || null,
+      scope: bundle.durable_publication.scope || null,
+      bundle_url: bundle.durable_publication.bundle_url || null,
+      key: bundle.durable_publication.key || null,
+      retention_mode: bundle.durable_publication.retention_mode || null,
+      no_overwrite: bundle.durable_publication.no_overwrite === true
+    } : null
+  };
+}
+
 function supabasePolicyEvidence(policyArtifact) {
   if (!policyArtifact) {
     return {};
@@ -655,6 +981,42 @@ function supabasePolicyEvidence(policyArtifact) {
     rule_results: policyArtifact.rule_results || [],
     request_digest: policyArtifact.request_digest || null,
     sql_digest: policyArtifact.sql?.sql_digest || null
+  };
+}
+
+function kojimemPolicyEvidence(policyArtifact) {
+  if (!policyArtifact) {
+    return {};
+  }
+  if (policyArtifact.version === KOJIMEM_POLICY_QUORUM_VERSION) {
+    const firstSubject = policyArtifact.decisions?.[0]?.subject || {};
+    const reasons = policyArtifact.deny_reasons || [...new Set((policyArtifact.decisions || []).flatMap((decision) => decision.subject?.reasons || []))];
+    return {
+      is_quorum: true,
+      version: policyArtifact.version,
+      policy_id: policyArtifact.policy_id,
+      policy_epoch_id: policyArtifact.policy_epoch_id,
+      policy_bundle_digest: policyArtifact.policy_bundle_digest,
+      decision: policyArtifact.decision,
+      reasons,
+      rule_results: firstSubject.rule_results || [],
+      request_digest: policyArtifact.request_digest || firstSubject.request_digest || null,
+      threshold: policyArtifact.threshold || 0,
+      allow_count: policyArtifact.allow_count || 0,
+      total_witnesses: policyArtifact.total_witnesses || 0,
+      decision_digests: (policyArtifact.decisions || []).map((decision) => digestValue({ subject: decision.subject, signature: decision.signature }))
+    };
+  }
+  return {
+    is_quorum: false,
+    version: policyArtifact.version,
+    policy_id: policyArtifact.policy_id,
+    policy_epoch_id: policyArtifact.policy_epoch_id,
+    policy_bundle_digest: policyArtifact.policy_bundle_digest,
+    decision: policyArtifact.decision,
+    reasons: policyArtifact.reasons || [],
+    rule_results: policyArtifact.rule_results || [],
+    request_digest: policyArtifact.request_digest || null
   };
 }
 
