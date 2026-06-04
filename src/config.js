@@ -6,7 +6,7 @@ export function loadConfig(env = process.env) {
 
   const gatewayKind = String(env.STRATA_GATEWAY_KIND || env.GATEWAY_KIND || env.MCP_GATEWAY_KIND || "email").toLowerCase();
   const sessionSecret = env.MCP_SESSION_SECRET || randomBytes(32).toString("hex");
-  const dataDir = env.DATA_DIR || (gatewayKind === "supabase" ? "artifacts/supabase-mcp" : "artifacts/email-mcp");
+  const dataDir = env.DATA_DIR || (gatewayKind === "nango-supabase" ? "artifacts/nango-supabase-mcp" : gatewayKind === "supabase" ? "artifacts/supabase-mcp" : "artifacts/email-mcp");
   const publicBaseUrl = trimSlash(env.PUBLIC_BASE_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8899"}`);
   const registryUrl = trimSlash(env.REGISTRY_URL || "");
   const registryTrustAnchorPublicKeyPem = env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM
@@ -36,7 +36,9 @@ export function loadConfig(env = process.env) {
       resendApiKey: env.RESEND_API_KEY || "",
       resendBaseUrl: trimSlash(env.RESEND_BASE_URL || "https://api.resend.com")
     },
-    supabase: loadSupabaseConfig(env, publicBaseUrl, dataDir),
+    supabase: loadSupabaseConfig(env, publicBaseUrl, dataDir, gatewayKind),
+    nango: loadNangoConfig(env),
+    nangoSupabase: loadNangoSupabaseConfig(env),
     certificateBundle: {
       backend: env.CERTIFICATE_BUNDLE_STORE_BACKEND || "local",
       awsRegion: env.CERTIFICATE_BUNDLE_AWS_REGION || env.AWS_REGION || "",
@@ -73,7 +75,7 @@ export function loadConfig(env = process.env) {
         ttlAttribute: env.OAUTH_DYNAMODB_TTL_ATTRIBUTE || "ttl"
       },
       consentPassword: env.OAUTH_CONSENT_PASSWORD || "",
-      consentPasswordHash: env.OAUTH_CONSENT_PASSWORD_SHA256 || env.SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || "",
+      consentPasswordHash: env.NANGO_SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || env.SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || env.OAUTH_CONSENT_PASSWORD_SHA256 || "",
       accessTokenTtlMs: Number(env.OAUTH_ACCESS_TOKEN_TTL_SECONDS || 3600) * 1000,
       refreshTokenTtlMs: Number(env.OAUTH_REFRESH_TOKEN_TTL_SECONDS || 7 * 24 * 3600) * 1000,
       codeTtlMs: Number(env.OAUTH_CODE_TTL_SECONDS || 600) * 1000
@@ -94,8 +96,8 @@ export function loadConfig(env = process.env) {
       id: env.TENANT_ID || "default"
     },
     gateway: {
-      id: env.GATEWAY_ID || bundledGateway?.gateway_id || (gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
-      keyId: env.GATEWAY_KEY_ID || bundledGateway?.key_id || (gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
+      id: env.GATEWAY_ID || bundledGateway?.gateway_id || (gatewayKind === "nango-supabase" ? "gateway:nango-supabase-mcp" : gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
+      keyId: env.GATEWAY_KEY_ID || bundledGateway?.key_id || (gatewayKind === "nango-supabase" ? "gateway:nango-supabase-mcp" : gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
       keyFile: env.GATEWAY_KEY_FILE || `${dataDir}/keys/gateway.key.json`,
       keyJson: env.GATEWAY_KEY_JSON || "",
       privateKeyPem: env.GATEWAY_PRIVATE_KEY_PEM || bundledGateway?.private_key_pem || "",
@@ -117,7 +119,7 @@ export function loadConfig(env = process.env) {
         enabled: truthy(env.GATEWAY_SIGNED_WITNESS_REQUESTS_ENABLED || env.WITNESS_SIGN_REQUESTS_ENABLED),
         witnessEpochId: env.WITNESS_EPOCH_ID || "",
         registryEpochId: env.REGISTRY_EPOCH_ID || "",
-        workflowId: env.WITNESS_WORKFLOW_ID || (gatewayKind === "supabase" ? "supabase.query" : "email.send")
+        workflowId: env.WITNESS_WORKFLOW_ID || (gatewayKind === "supabase" || gatewayKind === "nango-supabase" ? "supabase.query" : "email.send")
       }
     },
     policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p"),
@@ -141,17 +143,18 @@ export function loadConfig(env = process.env) {
   };
 }
 
-function loadSupabaseConfig(env, publicBaseUrl, dataDir) {
+function loadSupabaseConfig(env, publicBaseUrl, dataDir, gatewayKind) {
   const readOnlyDefault = env.SUPABASE_MCP_READ_ONLY === undefined ? "true" : env.SUPABASE_MCP_READ_ONLY;
   const features = parseCsv(env.SUPABASE_MCP_FEATURES || "database,docs");
   const oauthRedirectUri = trimSlash(env.SUPABASE_OAUTH_REDIRECT_URI || `${publicBaseUrl}/connectors/supabase/oauth/callback`);
+  const nangoServerUrl = trimSlash(env.NANGO_SERVER_URL || "https://api.nango.dev");
   return {
-    connectorId: env.SUPABASE_CONNECTOR_ID || "supabase-pilot",
-    connectorLabel: env.SUPABASE_CONNECTOR_LABEL || "Supabase Pilot",
-    projectRef: env.SUPABASE_PROJECT_REF || "",
+    connectorId: env.SUPABASE_CONNECTOR_ID || env.NANGO_SUPABASE_CONNECTOR_ID || (gatewayKind === "nango-supabase" ? "nango-supabase-pilot" : "supabase-pilot"),
+    connectorLabel: env.SUPABASE_CONNECTOR_LABEL || env.NANGO_SUPABASE_CONNECTOR_LABEL || (gatewayKind === "nango-supabase" ? "Nango Supabase Pilot" : "Supabase Pilot"),
+    projectRef: env.SUPABASE_PROJECT_REF || env.NANGO_SUPABASE_PROJECT_REF || "",
     readOnly: truthy(readOnlyDefault),
     features,
-    mcpBaseUrl: trimSlash(env.SUPABASE_MCP_BASE_URL || "https://mcp.supabase.com/mcp"),
+    mcpBaseUrl: trimSlash(env.SUPABASE_MCP_BASE_URL || (gatewayKind === "nango-supabase" ? `${nangoServerUrl}/proxy/mcp` : "https://mcp.supabase.com/mcp")),
     upstreamCallsEnabled: truthy(env.SUPABASE_ENABLE_UPSTREAM_CALLS || env.SUPABASE_MCP_ENABLE_UPSTREAM_CALLS),
     evidenceMode: env.SUPABASE_EVIDENCE_MODE || "digest-only",
     toolResultMode: env.SUPABASE_TOOL_RESULT_MODE || env.SUPABASE_MCP_RESULT_MODE || "summary",
@@ -175,6 +178,25 @@ function loadSupabaseConfig(env, publicBaseUrl, dataDir) {
       stateSecret: env.SUPABASE_OAUTH_STATE_SECRET || env.MCP_SESSION_SECRET || "",
       storePath: env.SUPABASE_CONNECTOR_STORE_PATH || `${dataDir}/supabase-connector.json`
     }
+  };
+}
+
+function loadNangoConfig(env) {
+  return {
+    serverUrl: trimSlash(env.NANGO_SERVER_URL || "https://api.nango.dev"),
+    secretKey: env.NANGO_SECRET_KEY || ""
+  };
+}
+
+function loadNangoSupabaseConfig(env) {
+  return {
+    providerConfigKey: env.NANGO_SUPABASE_PROVIDER_CONFIG_KEY || env.NANGO_PROVIDER_CONFIG_KEY || "",
+    connectionId: env.NANGO_SUPABASE_CONNECTION_ID || env.NANGO_CONNECTION_ID || "",
+    projectRef: env.NANGO_SUPABASE_PROJECT_REF || env.SUPABASE_PROJECT_REF || "",
+    tag: env.NANGO_SUPABASE_TAG || "nango-supabase-poc",
+    endUserId: env.NANGO_SUPABASE_END_USER_ID || "attexa-demo-jason",
+    endUserEmail: env.NANGO_SUPABASE_END_USER_EMAIL || "jason@amotivv.com",
+    organizationId: env.NANGO_SUPABASE_ORGANIZATION_ID || "amotivv-dev"
   };
 }
 

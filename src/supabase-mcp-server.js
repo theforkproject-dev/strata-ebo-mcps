@@ -119,7 +119,8 @@ export class SupabaseMcpServer {
 }
 
 function isSupabaseToolName(name) {
-  return String(name || "").startsWith("supabase_") || String(name || "").startsWith("supabase.");
+  const value = String(name || "");
+  return value.startsWith("supabase_") || value.startsWith("supabase.") || value.startsWith("nango_supabase_");
 }
 
 function normalizeSupabaseToolName(name) {

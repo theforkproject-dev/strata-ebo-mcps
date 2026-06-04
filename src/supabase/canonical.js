@@ -32,11 +32,18 @@ const BLOCKED_TOKENS = [
 ];
 
 export function connectorManifest(config) {
+  const nango = isNangoSupabase(config);
   return {
     version: SUPABASE_CONNECTOR_MANIFEST_VERSION,
     connector_id: config.supabase.connectorId,
     connector_label: config.supabase.connectorLabel,
-    connector_type: "supabase_mcp",
+    connector_type: nango ? "nango_supabase_mcp" : "supabase_mcp",
+    substrate: nango ? {
+      provider: "nango",
+      server_url: config.nango.serverUrl,
+      provider_config_key: config.nangoSupabase.providerConfigKey,
+      assurance_note: "Nango stores the Supabase credential and proxies MCP calls; Attexa remains the certificate and witness trust root."
+    } : null,
     upstream: {
       origin: upstreamOrigin(config),
       base_url: config.supabase.mcpBaseUrl,
@@ -52,10 +59,10 @@ export function connectorManifest(config) {
       blocked_tables: config.supabase.blockedTables
     },
     tools: [
-      manifestTool("supabase_list_tables_verified", "list_tables", "database.metadata.read", "supabase.list_tables.v1"),
-      manifestTool("supabase_inspect_schema_verified", "execute_sql", "database.metadata.read", "supabase.schema.inspect.v1"),
-      manifestTool("supabase_query_readonly_verified", "execute_sql", "database.read", "supabase.query.v1"),
-      manifestTool("supabase_search_docs", "search_docs", "docs.read", "supabase.docs.search.v1")
+      manifestTool(toolName(config, "list_tables_verified"), "list_tables", "database.metadata.read", "supabase.list_tables.v1"),
+      manifestTool(toolName(config, "inspect_schema_verified"), "execute_sql", "database.metadata.read", "supabase.schema.inspect.v1"),
+      manifestTool(toolName(config, "query_readonly_verified"), "execute_sql", "database.read", "supabase.query.v1"),
+      manifestTool(toolName(config, "search_docs"), "search_docs", "docs.read", "supabase.docs.search.v1")
     ]
   };
 }
@@ -65,6 +72,9 @@ export function connectorManifestDigest(config) {
 }
 
 export function upstreamMcpUrl(config) {
+  if (isNangoSupabase(config)) {
+    return `${config.nango.serverUrl}/proxy/mcp`;
+  }
   const url = new URL(config.supabase.mcpBaseUrl);
   if (config.supabase.projectRef) {
     url.searchParams.set("project_ref", config.supabase.projectRef);
@@ -85,6 +95,10 @@ export function upstreamOrigin(config) {
 }
 
 export function credentialFingerprint(config, credential = {}) {
+  if (isNangoSupabase(config)) {
+    const source = credential.connection_id || config.nangoSupabase.connectionId || "";
+    return source ? `sha256:${digestValue({ nango_connection_id: source })}` : null;
+  }
   const source = credential.refresh_token || credential.access_token || config.supabase.oauth.refreshToken || config.supabase.oauth.accessToken || "";
   return source ? `sha256:${digestValue({ credential: source })}` : null;
 }
@@ -191,6 +205,14 @@ function manifestTool(strataTool, upstreamTool, policyClass, certificateProfile)
     certificate_profile: certificateProfile,
     human_approval_required: false
   };
+}
+
+function toolName(config, suffix) {
+  return `${isNangoSupabase(config) ? "nango_supabase" : "supabase"}_${suffix}`;
+}
+
+function isNangoSupabase(config) {
+  return config.gatewayKind === "nango-supabase";
 }
 
 function normalizeSql(sql) {

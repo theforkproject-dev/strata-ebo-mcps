@@ -46,6 +46,8 @@ import {
 } from "../supabase/canonical.js";
 import { createSupabaseTool } from "../supabase/tool.js";
 import { SupabaseMcpClient, loadSupabaseConnectorCredential } from "../supabase/upstream-mcp-client.js";
+import { resolveNangoSupabaseConnection, nangoSupabaseConnectUrl } from "../nango-supabase/client.js";
+import { NangoSupabaseMcpClient } from "../nango-supabase/upstream-mcp-client.js";
 
 export async function createSupabaseActionRegistry(config) {
   const manifest = connectorManifest(config);
@@ -74,8 +76,8 @@ export async function createSupabaseActionRegistry(config) {
         policy_summary: policyBundle.rules
       },
       adapter: {
-        adapter_id: "supabase-hosted-mcp",
-        implementation: "Strata Supabase MCP governance proxy",
+        adapter_id: isNangoSupabase(config) ? "nango-supabase-mcp" : "supabase-hosted-mcp",
+        implementation: isNangoSupabase(config) ? "Attexa Nango Supabase MCP governance proxy" : "Strata Supabase MCP governance proxy",
         upstream_origin: upstreamOrigin(config)
       },
       persisted_payload_policy: config.supabase.evidenceMode
@@ -84,18 +86,25 @@ export async function createSupabaseActionRegistry(config) {
 }
 
 export async function supabaseGatewayStatus(config) {
-  const credential = await loadSupabaseConnectorCredential(config);
+  const credential = isNangoSupabase(config) ? await resolveNangoSupabaseConnection(config) : await loadSupabaseConnectorCredential(config);
   const policyBundle = defaultSupabasePolicyBundle(config);
   const missing = [];
-  if (!config.supabase.projectRef) missing.push("SUPABASE_PROJECT_REF");
+  if (!config.supabase.projectRef && !credential.project_ref) missing.push(isNangoSupabase(config) ? "NANGO_SUPABASE_PROJECT_REF or connected Nango projectRef" : "SUPABASE_PROJECT_REF");
   if (!config.supabase.readOnly) missing.push("SUPABASE_MCP_READ_ONLY=true");
   if (!config.supabase.features.includes("database")) missing.push("SUPABASE_MCP_FEATURES must include database");
-  if (!credential.access_token) missing.push("Supabase connector access token");
+  if (isNangoSupabase(config)) {
+    if (!config.nango.secretKey) missing.push("NANGO_SECRET_KEY");
+    if (!config.nangoSupabase.providerConfigKey) missing.push("NANGO_SUPABASE_PROVIDER_CONFIG_KEY");
+    if (!credential.ok) missing.push("Nango Supabase connection");
+  } else if (!credential.access_token) {
+    missing.push("Supabase connector access token");
+  }
   return {
     status: missing.length === 0 ? "ready" : "setup_required",
     checked_at: new Date().toISOString(),
     protocol: supabaseProtocolVersions(),
     connector: publicConnectorBinding(config, credential),
+    connect_url: isNangoSupabase(config) ? nangoSupabaseConnectUrl(config) : null,
     client_hints: supabaseClientHints(config),
     upstream: {
       url: upstreamMcpUrl(config),
@@ -114,7 +123,9 @@ export async function supabaseGatewayStatus(config) {
       witness_tiers: ["level-1-mechanical", "level-2-policy"],
       mechanical_witness_quorum_required: `${config.witness.threshold}-of-${config.witnesses.length}`,
       policy_witness_quorum_required: `${config.policyWitness.threshold}-of-${config.policyWitnesses.length}`,
-      phase1_note: "Supabase scaffold enforces local read-only policy now; live L1/L2 witness wiring follows the email gateway pattern."
+      phase1_note: config.supabase.upstreamCallsEnabled
+        ? "Live verified Supabase actions execute through ActionGateway with signed Level 1 mechanical witness receipts and signed Level 2 policy quorum."
+        : "Upstream Supabase calls are disabled; policy and certificate artifacts can be produced, but no live Supabase call will execute."
     },
     missing
   };
@@ -222,7 +233,7 @@ export async function runVerifiedSupabaseAction({ toolName, input, config, reque
   const admissionManifest = createSignedSupabaseAdmissionManifest({ config, requestContext, policyBundle, policyHash, egressPolicy: createEgressPolicy(config) });
   writeJson(paths.admissionManifest, admissionManifest);
   const operatorRegistryBinding = await loadAndWriteOperatorRegistryBinding(config, paths.operatorRegistry, admissionManifest);
-  const client = new SupabaseMcpClient(config);
+  const client = isNangoSupabase(config) ? new NangoSupabaseMcpClient(config, { requestContext }) : new SupabaseMcpClient(config);
   const tool = createSupabaseTool({ signer: keys.tool.signer, gatewayKeyring: keyring, client });
   const gateway = new ActionGateway({
     log,
@@ -312,6 +323,7 @@ function supabaseProtocolVersions() {
 }
 
 function supabaseTools(config) {
+  const prefix = prefixForConfig(config);
   return [
     {
       name: "gateway_status",
@@ -321,7 +333,7 @@ function supabaseTools(config) {
       annotations: { title: "Gateway status", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
     {
-      name: "supabase_list_tables_verified",
+      name: `${prefix}_list_tables_verified`,
       title: "List Supabase Tables With Strata Evidence",
       description: "List tables from the configured Supabase project through the Strata governance proxy. This preserves the upstream Supabase MCP list_tables tool mapping; pass schemas such as ['public'] and optional verbose=true for more metadata. Phase 1 is project-scoped and read-only.",
       inputSchema: {
@@ -335,7 +347,7 @@ function supabaseTools(config) {
       annotations: { title: "Verified table list", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
     {
-      name: "supabase_inspect_schema_verified",
+      name: `${prefix}_inspect_schema_verified`,
       title: "Inspect Supabase Schema With Strata Evidence",
       description: "Inspect schema metadata for the configured Supabase project using a gateway-generated read-only catalog query. Use schema/table filters when you need column-level detail before constructing a read-only SQL query.",
       inputSchema: {
@@ -349,7 +361,7 @@ function supabaseTools(config) {
       annotations: { title: "Verified schema inspect", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     },
     {
-      name: "supabase_query_readonly_verified",
+      name: `${prefix}_query_readonly_verified`,
       title: "Run Read-Only Supabase Query With Strata Evidence",
       description: `Run a single read-only SQL query against the configured Supabase project. Use the input field named query; it carries SQL text. The gateway allows SELECT, WITH, or EXPLAIN only and enforces a max row policy of ${config.supabase.maxRows}.`,
       inputSchema: {
@@ -363,14 +375,15 @@ function supabaseTools(config) {
       annotations: { title: "Verified read-only query", readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true }
     },
     {
-      name: "supabase_search_docs",
+      name: `${prefix}_search_docs`,
       title: "Search Supabase Docs",
-      description: "Search Supabase documentation through the configured Supabase MCP server. Supabase's upstream tool expects graphql_query; the Strata wrapper also accepts query as a convenience alias.",
+      description: "Search Supabase documentation through the configured Supabase MCP server. Pass query as a plain natural-language search string; the gateway turns it into the upstream GraphQL searchDocs query. Set include_content=true only when you need full markdown page bodies because responses can be large. Advanced callers may pass graphql_query to send a raw Supabase docs GraphQL query.",
       inputSchema: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Convenience alias for graphql_query." },
-          graphql_query: { type: "string", description: "GraphQL query string accepted by Supabase's upstream search_docs tool." }
+          query: { type: "string", description: "Plain-text docs search term, for example 'row level security'." },
+          include_content: { type: "boolean", default: false, description: "When true, include full markdown content for matching pages. Defaults to false to keep MCP responses small." },
+          graphql_query: { type: "string", description: "Advanced: raw GraphQL query string accepted by Supabase's upstream search_docs tool." }
         },
         anyOf: [
           { required: ["query"] },
@@ -384,7 +397,8 @@ function supabaseTools(config) {
 }
 
 function buildUpstreamCall(toolName, input, config) {
-  if (toolName === "supabase_list_tables_verified") {
+  const normalizedToolName = normalizeSupabaseToolName(toolName);
+  if (normalizedToolName === "supabase_list_tables_verified") {
     return {
       upstreamToolName: "list_tables",
       upstreamArguments: {
@@ -393,24 +407,24 @@ function buildUpstreamCall(toolName, input, config) {
       }
     };
   }
-  if (toolName === "supabase_inspect_schema_verified") {
+  if (normalizedToolName === "supabase_inspect_schema_verified") {
     const query = schemaInspectQuery(input);
     return {
       upstreamToolName: "execute_sql",
       upstreamArguments: { query }
     };
   }
-  if (toolName === "supabase_query_readonly_verified") {
+  if (normalizedToolName === "supabase_query_readonly_verified") {
     const classification = classifyReadOnlySql(input.query, config);
     return {
       upstreamToolName: "execute_sql",
       upstreamArguments: { query: classification.ok ? enforceLimit(input.query, config.supabase.maxRows) : input.query }
     };
   }
-  if (toolName === "supabase_search_docs") {
+  if (normalizedToolName === "supabase_search_docs") {
     return {
       upstreamToolName: "search_docs",
-      upstreamArguments: { graphql_query: input.graphql_query || input.query }
+      upstreamArguments: { graphql_query: input.graphql_query || docsSearchGraphql(input.query, { includeContent: Boolean(input.include_content) }) }
     };
   }
   throw new Error(`Unknown Supabase tool: ${toolName}`);
@@ -422,8 +436,13 @@ function schemaInspectQuery(input) {
   return `select table_schema, table_name, column_name, data_type, is_nullable, column_default from information_schema.columns where table_schema = ${schema} ${tableClause} order by table_schema, table_name, ordinal_position limit 500`;
 }
 
+function docsSearchGraphql(query, { includeContent = false } = {}) {
+  const fields = includeContent ? "title href content" : "title href";
+  return `query { searchDocs(query: ${JSON.stringify(String(query || ""))}) { nodes { ${fields} } } }`;
+}
+
 async function writeSupabaseCertificate({ config, runId, outDir, certificateUrl, requestContext, request, policyBundle, policyDecision, upstreamResult, upstreamError, denied, witnessed = null }) {
-  const credential = await loadSupabaseConnectorCredential(config);
+  const credential = isNangoSupabase(config) ? await resolveNangoSupabaseConnection(config, requestContext) : await loadSupabaseConnectorCredential(config);
   const resultSummary = upstreamResult ? summarizeSupabaseResult(upstreamResult) : null;
   const toolResultPayload = supabaseToolResultPayload(upstreamResult, {
     mode: config.supabase.toolResultMode,
@@ -664,7 +683,7 @@ function createSignedSupabaseAdmissionManifest({ config, requestContext, policyB
       governanceId: "gov_supabase_mcp_v1",
       policyHash,
       agent: tinfoilEvidence(null, "mcp-agent", ["mcp://tools/*"], null),
-      gateway: tinfoilEvidence(config.attestation?.gateway, "supabase-gateway", ["strata://verified-actions/supabase.query"], egressPolicy),
+      gateway: tinfoilEvidence(config.attestation?.gateway, isNangoSupabase(config) ? "nango-supabase-gateway" : "supabase-gateway", ["strata://verified-actions/supabase.query"], egressPolicy),
       verifier: tinfoilEvidence(null, "supabase-verifier", ["verify://local/supabase"], null),
       approvedTools: [{ tool_id: "supabase-mcp", audience: "supabase-mcp", methods: ["MCP tools/call"] }],
       approvedDataSources: [{ source_id: "supabase-hosted-mcp", origin: upstreamOrigin(config), project_ref: config.supabase.projectRef, read_only: config.supabase.readOnly }],
@@ -778,7 +797,7 @@ function createEgressPolicy(config) {
   const allowedUrls = [...config.witnesses, ...config.policyWitnesses].map((witness) => witness.url);
   if (config.registry?.url) allowedUrls.push(config.registry.url);
   if (config.supabase.mcpBaseUrl) allowedUrls.push(upstreamOrigin(config));
-  return { mode: "supabase-mcp-readonly-witness-and-registry-urls-only", allowed_urls: allowedUrls.sort(), enforcement: "application-code-typed-adapters" };
+  return { mode: isNangoSupabase(config) ? "nango-supabase-mcp-readonly-witness-and-registry-urls-only" : "supabase-mcp-readonly-witness-and-registry-urls-only", allowed_urls: allowedUrls.sort(), enforcement: "application-code-typed-adapters" };
 }
 
 function tinfoilEvidence(evidence, containerName, shimPaths, egressPolicy) {
@@ -806,24 +825,27 @@ function registryPinOptions(config) {
 
 function supabaseClientHints(config) {
   const liveMode = config.supabase.toolResultMode || "summary";
+  const prefix = prefixForConfig(config);
   return {
     version: "strata.connector_client_hints.v1",
     upstream_capabilities: ["sql:read", "schema:inspect", "docs:search"],
     upstream_tool_mappings: {
-      supabase_list_tables_verified: "list_tables",
-      supabase_inspect_schema_verified: "execute_sql",
-      supabase_query_readonly_verified: "execute_sql",
-      supabase_search_docs: "search_docs"
+      [`${prefix}_list_tables_verified`]: "list_tables",
+      [`${prefix}_inspect_schema_verified`]: "execute_sql",
+      [`${prefix}_query_readonly_verified`]: "execute_sql",
+      [`${prefix}_search_docs`]: "search_docs"
     },
     semantic_input_hints: {
-      supabase_query_readonly_verified: {
+      [`${prefix}_query_readonly_verified`]: {
         query: "Single read-only SQL statement. The field is named query to match upstream MCP conventions, but semantically it carries SQL."
       },
-      supabase_search_docs: {
-        graphql_query: "GraphQL query string for Supabase docs search. The wrapper also accepts query as an alias."
+      [`${prefix}_search_docs`]: {
+        query: "Plain natural-language Supabase docs search string. The gateway wraps it in searchDocs GraphQL automatically.",
+        include_content: "Boolean. Defaults false. Set true only when the page markdown body is needed.",
+        graphql_query: "Advanced raw GraphQL query string for Supabase docs search. Overrides query when present."
       }
     },
-    evidence_mode_per_tool: Object.fromEntries(["supabase_list_tables_verified", "supabase_inspect_schema_verified", "supabase_query_readonly_verified", "supabase_search_docs"].map((tool) => [tool, {
+    evidence_mode_per_tool: Object.fromEntries(["list_tables_verified", "inspect_schema_verified", "query_readonly_verified", "search_docs"].map((suffix) => [`${prefix}_${suffix}`, {
       durable_bundle: config.supabase.evidenceMode,
       live_response: liveMode,
       raw_result_in_durable_bundle: false
@@ -840,6 +862,7 @@ function supabaseClientHints(config) {
       upstream_unavailable: "Supabase MCP was unavailable or returned a 5xx response.",
       gateway_internal_error: "The Strata gateway failed before producing a valid upstream request."
     },
+    substrate: isNangoSupabase(config) ? "nango" : "supabase-hosted-mcp",
     skill_boundary: "Connector hints are protocol-level affordances. Product/schema-specific query recipes, such as Hey Jil table joins, belong in client-side skills."
   };
 }
@@ -862,16 +885,36 @@ function publicConnectorBinding(config, credential = {}) {
   return {
     connector_id: config.supabase.connectorId,
     connector_label: config.supabase.connectorLabel,
-    connector_type: "supabase_mcp",
-    auth_mode: "supabase_manual_oauth_app",
+    connector_type: isNangoSupabase(config) ? "nango_supabase_mcp" : "supabase_mcp",
+    auth_mode: isNangoSupabase(config) ? "nango_connect_supabase_mcp_oauth" : "supabase_manual_oauth_app",
     credential_fingerprint: credentialFingerprint(config, credential),
-    project_ref: config.supabase.projectRef || null,
+    project_ref: credential.project_ref || config.supabase.projectRef || null,
     read_only: config.supabase.readOnly,
     features: config.supabase.features,
     upstream_origin: upstreamOrigin(config),
     upstream_url: upstreamMcpUrl(config),
+    substrate: isNangoSupabase(config) ? {
+      provider: "nango",
+      provider_config_key: config.nangoSupabase.providerConfigKey,
+      connection_fingerprint: credential.credential_fingerprint || credentialFingerprint(config, credential),
+      taint: "nango-cloud-not-enclave-attested"
+    } : null,
     connector_manifest_digest: connectorManifestDigest(config)
   };
+}
+
+function normalizeSupabaseToolName(toolName) {
+  return String(toolName || "")
+    .replace(/^supabase\./, "supabase_")
+    .replace(/^nango_supabase_/, "supabase_");
+}
+
+function prefixForConfig(config) {
+  return isNangoSupabase(config) ? "nango_supabase" : "supabase";
+}
+
+function isNangoSupabase(config) {
+  return config.gatewayKind === "nango-supabase";
 }
 
 function publicArtifactUrls(config, runId) {

@@ -47,7 +47,8 @@ export function evaluateSupabasePolicy({ toolName, input, request, config, polic
   const ruleResults = [];
   ruleResults.push(rule("project_ref_configured", !rules.require_project_ref || Boolean(effectiveSupabase.projectRef), { project_ref_present: Boolean(effectiveSupabase.projectRef) }));
   ruleResults.push(rule("read_only_required", !rules.require_read_only || Boolean(effectiveSupabase.readOnly), { read_only: effectiveSupabase.readOnly }));
-  ruleResults.push(rule("tool_allowed", rules.allowed_tools.includes(toolName), { tool_name: toolName, allowed_tools: rules.allowed_tools }));
+  const normalizedToolName = normalizeSupabaseToolName(toolName);
+  ruleResults.push(rule("tool_allowed", rules.allowed_tools.includes(normalizedToolName), { tool_name: toolName, normalized_tool_name: normalizedToolName, allowed_tools: rules.allowed_tools }));
   const featureErrors = effectiveSupabase.features.filter((feature) => !rules.allowed_features.includes(feature));
   ruleResults.push(rule("features_allowed", featureErrors.length === 0, { configured_features: effectiveSupabase.features, disallowed_features: featureErrors }));
 
@@ -190,7 +191,9 @@ export async function collectSupabasePolicyQuorum({ witnesses, toolName, input, 
 }
 
 function normalizeSupabaseToolName(toolName) {
-  return String(toolName || "").replace(/^supabase\./, "supabase_");
+  return String(toolName || "")
+    .replace(/^supabase\./, "supabase_")
+    .replace(/^nango_supabase_/, "supabase_");
 }
 
 function rule(name, pass, details = {}) {

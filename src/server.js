@@ -9,13 +9,15 @@ import { errorResponse, isNotification, parseJsonRpc, successResponse, validateR
 import { SessionManager } from "./session.js";
 import { OAuthServer } from "./oauth/server.js";
 import { SupabaseConnectorOAuth } from "./supabase/connector-oauth.js";
+import { NangoSupabaseConnect } from "./nango-supabase/connect.js";
 import { loadCertificateBundle, loadRecipientVerifications } from "./certificates/bundle.js";
 
 const config = loadConfig();
-const mcp = config.gatewayKind === "supabase" ? new SupabaseMcpServer(config) : new EmailMcpServer(config);
+const mcp = config.gatewayKind === "supabase" || config.gatewayKind === "nango-supabase" ? new SupabaseMcpServer(config) : new EmailMcpServer(config);
 const sessions = new SessionManager({ secret: config.sessionSecret });
 const oauthServer = config.oauth.enabled ? new OAuthServer(config) : null;
 const supabaseConnectorOAuth = config.gatewayKind === "supabase" ? new SupabaseConnectorOAuth(config) : null;
+const nangoSupabaseConnect = config.gatewayKind === "nango-supabase" ? new NangoSupabaseConnect(config) : null;
 
 if (config.sessionSecretWasGenerated) {
   console.warn("MCP_SESSION_SECRET not set; using an ephemeral development secret for this process.");
@@ -44,6 +46,10 @@ const server = createServer(async (request, response) => {
 
     if (supabaseConnectorOAuth?.canHandle(request)) {
       return await supabaseConnectorOAuth.handle(request, response);
+    }
+
+    if (nangoSupabaseConnect?.canHandle(request)) {
+      return await nangoSupabaseConnect.handle(request, response);
     }
 
     if (oauthServer?.canHandle(request)) {
