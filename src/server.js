@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadConfig } from "./config.js";
 import { EmailMcpServer, MCP_PROTOCOL_VERSION } from "./mcp-server.js";
 import { SupabaseMcpServer } from "./supabase-mcp-server.js";
+import { KojimemMcpServer } from "./kojimem-mcp-server.js";
 import { errorResponse, isNotification, parseJsonRpc, successResponse, validateRequest } from "./jsonrpc.js";
 import { SessionManager } from "./session.js";
 import { OAuthServer } from "./oauth/server.js";
@@ -13,7 +14,11 @@ import { NangoSupabaseConnect } from "./nango-supabase/connect.js";
 import { loadCertificateBundle, loadRecipientVerifications } from "./certificates/bundle.js";
 
 const config = loadConfig();
-const mcp = config.gatewayKind === "supabase" || config.gatewayKind === "nango-supabase" ? new SupabaseMcpServer(config) : new EmailMcpServer(config);
+const mcp = config.gatewayKind === "kojimem"
+  ? new KojimemMcpServer(config)
+  : config.gatewayKind === "supabase" || config.gatewayKind === "nango-supabase"
+    ? new SupabaseMcpServer(config)
+    : new EmailMcpServer(config);
 const sessions = new SessionManager({ secret: config.sessionSecret });
 const oauthServer = config.oauth.enabled ? new OAuthServer(config) : null;
 const supabaseConnectorOAuth = config.gatewayKind === "supabase" ? new SupabaseConnectorOAuth(config) : null;
@@ -37,6 +42,14 @@ const server = createServer(async (request, response) => {
           read_only: config.supabase.readOnly,
           features: config.supabase.features,
           upstream_calls_enabled: config.supabase.upstreamCallsEnabled
+        } : undefined,
+        kojimem_connector: config.gatewayKind === "kojimem" ? {
+          connector_id: config.kojimem.connectorId,
+          api_base_url: config.kojimem.apiBaseUrl,
+          network: config.kojimem.network,
+          agent_a_wallet_configured: Boolean(config.kojimem.agentAAccount?.address),
+          agent_b_wallet_configured: Boolean(config.kojimem.agentBAccount?.address),
+          l3_exposure_threshold_usd: config.kojimem.l3ExposureThresholdUsd
         } : undefined,
         witness_count: config.witnesses.length,
         oauth_enabled: Boolean(oauthServer),
@@ -268,7 +281,9 @@ function serveCertificateArtifact(response, runDir, artifactName) {
     "l1-witness-attestations.json": { path: "l1-witness-attestations.json", type: "application/json" },
     "connector-manifest.json": { path: "connector-manifest.json", type: "application/json" },
     "supabase-request.json": { path: "supabase-request.json", type: "application/json" },
-    "supabase-result-metadata.json": { path: "supabase-result-metadata.json", type: "application/json" }
+    "supabase-result-metadata.json": { path: "supabase-result-metadata.json", type: "application/json" },
+    "kojimem-request.json": { path: "kojimem-request.json", type: "application/json" },
+    "kojimem-result-metadata.json": { path: "kojimem-result-metadata.json", type: "application/json" }
   };
   const artifact = artifactMap[artifactName];
   if (!artifact) {

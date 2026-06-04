@@ -14,6 +14,13 @@ import {
   signSupabasePolicyDecisionSubject,
   supabasePolicyBundleDigest
 } from "../src/policy/supabase-policy.js";
+import {
+  KOJIMEM_POLICY_DOMAIN,
+  createKojimemPolicyDecisionSubject,
+  defaultKojimemPolicyBundle,
+  signKojimemPolicyDecisionSubject,
+  kojimemPolicyBundleDigest
+} from "../src/policy/kojimem-policy.js";
 
 const args = parseArgs(process.argv.slice(2));
 const witnessId = args["witness-id"] || process.env.POLICY_WITNESS_ID || process.env.WITNESS_ID || "policy-witness-local";
@@ -31,6 +38,9 @@ const emailPolicyDigest = policyBundleDigest(emailPolicyBundle);
 const supabasePolicyBundle = defaultSupabasePolicyBundle(config);
 const supabasePolicyDigest = supabasePolicyBundleDigest(supabasePolicyBundle);
 const supabasePolicyUrl = args["supabase-policy-url"] || process.env.SUPABASE_POLICY_BUNDLE_URL || "";
+const kojimemPolicyBundle = defaultKojimemPolicyBundle(config);
+const kojimemPolicyDigest = kojimemPolicyBundleDigest(kojimemPolicyBundle);
+const kojimemPolicyUrl = args["kojimem-policy-url"] || process.env.KOJIMEM_POLICY_BUNDLE_URL || "";
 const { signer, publicKeyPem } = loadOrCreateEd25519Signer({ keyFile, keyId });
 
 const server = createServer(async (request, response) => {
@@ -43,7 +53,7 @@ const server = createServer(async (request, response) => {
         policy_epoch_id: emailPolicyBundle.epoch_id,
         policy_bundle_digest: emailPolicyDigest,
         policy_url: policyUrl || null,
-        supported_policy_domains: ["policy.email.send", "policy.supabase.mcp"],
+        supported_policy_domains: ["policy.email.send", "policy.supabase.mcp", KOJIMEM_POLICY_DOMAIN],
         policies: {
           email: {
             policy_epoch_id: emailPolicyBundle.epoch_id,
@@ -54,6 +64,11 @@ const server = createServer(async (request, response) => {
             policy_epoch_id: supabasePolicyBundle.epoch_id,
             policy_bundle_digest: supabasePolicyDigest,
             policy_url: supabasePolicyUrl || null
+          },
+          kojimem: {
+            policy_epoch_id: kojimemPolicyBundle.epoch_id,
+            policy_bundle_digest: kojimemPolicyDigest,
+            policy_url: kojimemPolicyUrl || null
           }
         }
       });
@@ -70,7 +85,8 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/v1/policies") {
       return json(response, 200, {
         email: { policy_bundle: emailPolicyBundle, policy_bundle_digest: emailPolicyDigest, policy_url: policyUrl || null },
-        supabase: { policy_bundle: supabasePolicyBundle, policy_bundle_digest: supabasePolicyDigest, policy_url: supabasePolicyUrl || null }
+        supabase: { policy_bundle: supabasePolicyBundle, policy_bundle_digest: supabasePolicyDigest, policy_url: supabasePolicyUrl || null },
+        kojimem: { policy_bundle: kojimemPolicyBundle, policy_bundle_digest: kojimemPolicyDigest, policy_url: kojimemPolicyUrl || null }
       });
     }
 
@@ -78,6 +94,9 @@ const server = createServer(async (request, response) => {
       const body = await readJson(request);
       if (body.domain === "policy.supabase.mcp" || body.request?.version === "strata.supabase.request.v1") {
         return evaluateSupabase(response, body);
+      }
+      if (body.domain === KOJIMEM_POLICY_DOMAIN || body.request?.version === "strata.kojimem.agent_handoff_request.v1") {
+        return evaluateKojimem(response, body);
       }
       if (!body.email || !body.commitment) {
         return json(response, 400, { error: "email and commitment are required" });
@@ -122,9 +141,11 @@ server.listen(port, host, () => {
     policy_bundle_digest: emailPolicyDigest,
     policy_epoch_id: emailPolicyBundle.epoch_id,
     policy_url: policyUrl || null,
-    supported_policy_domains: ["policy.email.send", "policy.supabase.mcp"],
+    supported_policy_domains: ["policy.email.send", "policy.supabase.mcp", KOJIMEM_POLICY_DOMAIN],
     supabase_policy_bundle_digest: supabasePolicyDigest,
-    supabase_policy_epoch_id: supabasePolicyBundle.epoch_id
+    supabase_policy_epoch_id: supabasePolicyBundle.epoch_id,
+    kojimem_policy_bundle_digest: kojimemPolicyDigest,
+    kojimem_policy_epoch_id: kojimemPolicyBundle.epoch_id
   }));
 });
 
@@ -155,6 +176,35 @@ function evaluateSupabase(response, body) {
     signature: signSupabasePolicyDecisionSubject(subject, signer),
     policy_bundle_digest: supabasePolicyDigest,
     policy_url: body.policy_url || supabasePolicyUrl || null
+  });
+}
+
+function evaluateKojimem(response, body) {
+  if (!body.request) {
+    return json(response, 400, { error: "request is required for Kojimem policy evaluation" });
+  }
+  if (body.policy_bundle_digest && body.policy_bundle_digest !== kojimemPolicyDigest) {
+    return json(response, 409, { error: "policy_bundle_digest mismatch", policy_bundle_digest: kojimemPolicyDigest });
+  }
+  if (body.policy_epoch_id && body.policy_epoch_id !== kojimemPolicyBundle.epoch_id) {
+    return json(response, 409, { error: "policy_epoch_id mismatch", policy_epoch_id: kojimemPolicyBundle.epoch_id });
+  }
+  if (kojimemPolicyUrl && body.policy_url && body.policy_url !== kojimemPolicyUrl) {
+    return json(response, 409, { error: "policy_url mismatch", policy_url: kojimemPolicyUrl });
+  }
+  const subject = createKojimemPolicyDecisionSubject({
+    witnessId,
+    policyBundle: kojimemPolicyBundle,
+    policyUrl: body.policy_url || kojimemPolicyUrl,
+    request: body.request,
+    input: body.input || {},
+    config
+  });
+  return json(response, 200, {
+    subject,
+    signature: signKojimemPolicyDecisionSubject(subject, signer),
+    policy_bundle_digest: kojimemPolicyDigest,
+    policy_url: body.policy_url || kojimemPolicyUrl || null
   });
 }
 

@@ -4,8 +4,9 @@ import { join } from "node:path";
 export function loadCertificateBundle({ config, runId, runDir, bundleUrl = "", durablePublication = null, recipientVerifications = [] }) {
   const certificate = readJson(join(runDir, "certificate.json"));
   const isSupabase = String(certificate.version || "").startsWith("strata.supabase.");
+  const isKojimem = String(certificate.version || "").startsWith("strata.kojimem.");
   return {
-    version: isSupabase ? "strata.supabase.certificate_bundle.v1" : "strata.email.certificate_bundle.v1",
+    version: isKojimem ? "strata.kojimem.certificate_bundle.v1" : isSupabase ? "strata.supabase.certificate_bundle.v1" : "strata.email.certificate_bundle.v1",
     run_id: runId,
     bundle_url: bundleUrl || `${config.certificateBaseUrl}/${runId}/bundle`,
     gateway_bundle_url: `${config.certificateBaseUrl}/${runId}/bundle`,
@@ -26,6 +27,8 @@ export function loadCertificateBundle({ config, runId, runDir, bundleUrl = "", d
     connector_manifest: readOptionalJson(join(runDir, "connector-manifest.json")),
     supabase_request: readOptionalJson(join(runDir, "supabase-request.json")),
     supabase_result_metadata: readOptionalJson(join(runDir, "supabase-result-metadata.json")),
+    kojimem_request: readOptionalJson(join(runDir, "kojimem-request.json")),
+    kojimem_result_metadata: readOptionalJson(join(runDir, "kojimem-result-metadata.json")),
     recipient_verifications: recipientVerifications
   };
 }

@@ -1,12 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { createKojimemAccount } from "./kojimem/client.js";
 
 export function loadConfig(env = process.env) {
   loadDotEnv(env);
 
   const gatewayKind = String(env.STRATA_GATEWAY_KIND || env.GATEWAY_KIND || env.MCP_GATEWAY_KIND || "email").toLowerCase();
   const sessionSecret = env.MCP_SESSION_SECRET || randomBytes(32).toString("hex");
-  const dataDir = env.DATA_DIR || (gatewayKind === "nango-supabase" ? "artifacts/nango-supabase-mcp" : gatewayKind === "supabase" ? "artifacts/supabase-mcp" : "artifacts/email-mcp");
+  const dataDir = env.DATA_DIR || (gatewayKind === "kojimem" ? "artifacts/kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "artifacts/nango-supabase-mcp" : gatewayKind === "supabase" ? "artifacts/supabase-mcp" : "artifacts/email-mcp");
   const publicBaseUrl = trimSlash(env.PUBLIC_BASE_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8899"}`);
   const registryUrl = trimSlash(env.REGISTRY_URL || "");
   const registryTrustAnchorPublicKeyPem = env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM
@@ -39,6 +40,7 @@ export function loadConfig(env = process.env) {
     supabase: loadSupabaseConfig(env, publicBaseUrl, dataDir, gatewayKind),
     nango: loadNangoConfig(env),
     nangoSupabase: loadNangoSupabaseConfig(env),
+    kojimem: loadKojimemConfig(env),
     certificateBundle: {
       backend: env.CERTIFICATE_BUNDLE_STORE_BACKEND || "local",
       awsRegion: env.CERTIFICATE_BUNDLE_AWS_REGION || env.AWS_REGION || "",
@@ -75,7 +77,7 @@ export function loadConfig(env = process.env) {
         ttlAttribute: env.OAUTH_DYNAMODB_TTL_ATTRIBUTE || "ttl"
       },
       consentPassword: env.OAUTH_CONSENT_PASSWORD || "",
-      consentPasswordHash: env.NANGO_SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || env.SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || env.OAUTH_CONSENT_PASSWORD_SHA256 || "",
+      consentPasswordHash: env.KOJIMEM_MCP_CONSENT_PASSWORD_SHA256 || env.NANGO_SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || env.SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || env.OAUTH_CONSENT_PASSWORD_SHA256 || "",
       accessTokenTtlMs: Number(env.OAUTH_ACCESS_TOKEN_TTL_SECONDS || 3600) * 1000,
       refreshTokenTtlMs: Number(env.OAUTH_REFRESH_TOKEN_TTL_SECONDS || 7 * 24 * 3600) * 1000,
       codeTtlMs: Number(env.OAUTH_CODE_TTL_SECONDS || 600) * 1000
@@ -96,8 +98,8 @@ export function loadConfig(env = process.env) {
       id: env.TENANT_ID || "default"
     },
     gateway: {
-      id: env.GATEWAY_ID || bundledGateway?.gateway_id || (gatewayKind === "nango-supabase" ? "gateway:nango-supabase-mcp" : gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
-      keyId: env.GATEWAY_KEY_ID || bundledGateway?.key_id || (gatewayKind === "nango-supabase" ? "gateway:nango-supabase-mcp" : gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
+      id: env.GATEWAY_ID || bundledGateway?.gateway_id || (gatewayKind === "kojimem" ? "gateway:kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "gateway:nango-supabase-mcp" : gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
+      keyId: env.GATEWAY_KEY_ID || bundledGateway?.key_id || (gatewayKind === "kojimem" ? "gateway:kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "gateway:nango-supabase-mcp" : gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
       keyFile: env.GATEWAY_KEY_FILE || `${dataDir}/keys/gateway.key.json`,
       keyJson: env.GATEWAY_KEY_JSON || "",
       privateKeyPem: env.GATEWAY_PRIVATE_KEY_PEM || bundledGateway?.private_key_pem || "",
@@ -119,7 +121,7 @@ export function loadConfig(env = process.env) {
         enabled: truthy(env.GATEWAY_SIGNED_WITNESS_REQUESTS_ENABLED || env.WITNESS_SIGN_REQUESTS_ENABLED),
         witnessEpochId: env.WITNESS_EPOCH_ID || "",
         registryEpochId: env.REGISTRY_EPOCH_ID || "",
-        workflowId: env.WITNESS_WORKFLOW_ID || (gatewayKind === "supabase" || gatewayKind === "nango-supabase" ? "supabase.query" : "email.send")
+        workflowId: env.WITNESS_WORKFLOW_ID || (gatewayKind === "kojimem" ? "agent-handoff.fraud-signal-exchange" : gatewayKind === "supabase" || gatewayKind === "nango-supabase" ? "supabase.query" : "email.send")
       }
     },
     policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p"),
@@ -197,6 +199,29 @@ function loadNangoSupabaseConfig(env) {
     endUserId: env.NANGO_SUPABASE_END_USER_ID || "attexa-demo-jason",
     endUserEmail: env.NANGO_SUPABASE_END_USER_EMAIL || "jason@amotivv.com",
     organizationId: env.NANGO_SUPABASE_ORGANIZATION_ID || "amotivv-dev"
+  };
+}
+
+function loadKojimemConfig(env) {
+  const agentAPrivateKey = env.KOJIMEM_AGENT_A_PRIVATE_KEY || "";
+  const agentBPrivateKey = env.KOJIMEM_AGENT_B_PRIVATE_KEY || "";
+  return {
+    apiBaseUrl: trimSlash(env.KOJIMEM_API_BASE_URL || "https://api.kojimem.dev"),
+    network: env.KOJIMEM_NETWORK || "eip155:84532",
+    connectorId: env.KOJIMEM_CONNECTOR_ID || "kojimem-agent-handoff",
+    connectorLabel: env.KOJIMEM_CONNECTOR_LABEL || "Kojimem Agent Handoff",
+    agentAPrivateKey,
+    agentBPrivateKey,
+    agentAAccount: createKojimemAccount(agentAPrivateKey),
+    agentBAccount: createKojimemAccount(agentBPrivateKey),
+    agentALabel: env.KOJIMEM_AGENT_A_LABEL || "Conduit - Issuer Fraud Analyst",
+    agentBLabel: env.KOJIMEM_AGENT_B_LABEL || "Sentinel - Network Correlator",
+    defaultTtl: env.KOJIMEM_DEFAULT_TTL || "1h",
+    maxTtl: env.KOJIMEM_MAX_TTL || "1h",
+    defaultRecallTier: env.KOJIMEM_DEFAULT_RECALL_TIER || "reasoning",
+    defaultEstimatedExposureUsd: Number(env.KOJIMEM_DEFAULT_ESTIMATED_EXPOSURE_USD || 25000),
+    l3ExposureThresholdUsd: Number(env.KOJIMEM_L3_EXPOSURE_THRESHOLD_USD || 10000),
+    timeoutMs: Number(env.KOJIMEM_TIMEOUT_MS || 90000)
   };
 }
 
