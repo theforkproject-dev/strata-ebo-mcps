@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { EmailMcpServer, MCP_PROTOCOL_VERSION } from "./mcp-server.js";
 import { SupabaseMcpServer } from "./supabase-mcp-server.js";
 import { KojimemMcpServer } from "./kojimem-mcp-server.js";
+import { ManagedAgentPolicyGateway } from "./managed-agent-policy-gateway.js";
 import { errorResponse, isNotification, parseJsonRpc, successResponse, validateRequest } from "./jsonrpc.js";
 import { SessionManager } from "./session.js";
 import { OAuthServer } from "./oauth/server.js";
@@ -14,7 +15,9 @@ import { NangoSupabaseConnect } from "./nango-supabase/connect.js";
 import { loadCertificateBundle, loadRecipientVerifications } from "./certificates/bundle.js";
 
 const config = loadConfig();
-const mcp = config.gatewayKind === "kojimem"
+const mcp = config.gatewayKind === "managed-agent-policy"
+  ? new ManagedAgentPolicyGateway(config)
+  : config.gatewayKind === "kojimem"
   ? new KojimemMcpServer(config)
   : config.gatewayKind === "supabase" || config.gatewayKind === "nango-supabase"
     ? new SupabaseMcpServer(config)
@@ -52,6 +55,7 @@ const server = createServer(async (request, response) => {
           l3_exposure_threshold_usd: config.kojimem.l3ExposureThresholdUsd
         } : undefined,
         witness_count: config.witnesses.length,
+        ...(config.gatewayKind === "managed-agent-policy" ? await mcp.health() : {}),
         oauth_enabled: Boolean(oauthServer),
         oauth_store_backend: oauthServer ? config.oauth.storeBackend : "disabled"
       });
@@ -75,6 +79,11 @@ const server = createServer(async (request, response) => {
 
     if (request.url === "/mcp") {
       return await handleMcp(request, response);
+    }
+
+    if (config.gatewayKind === "managed-agent-policy" && request.method === "POST" && request.url === "/v1/evaluate") {
+      const body = await readBody(request).then((raw) => raw ? JSON.parse(raw) : {});
+      return json(response, 200, await mcp.evaluate(body));
     }
 
     return json(response, 404, { error: "not found" });

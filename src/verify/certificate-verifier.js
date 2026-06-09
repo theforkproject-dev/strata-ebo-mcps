@@ -1,6 +1,7 @@
 import {
   digestValue,
   verifyCheckpoint,
+  verifyEd25519,
   verifySession,
   verifyWitnessAuthority,
   verifyWitnessRegistryEpoch,
@@ -32,6 +33,11 @@ const SUPABASE_RESULT_SUMMARY_VERSION = "strata.supabase.result_summary.v1";
 const KOJIMEM_CERTIFICATE_BUNDLE_VERSION = "strata.kojimem.certificate_bundle.v1";
 const KOJIMEM_POLICY_DENIAL_CERTIFICATE_VERSION = "strata.kojimem.policy_denial_certificate.v1";
 const KOJIMEM_CONNECTOR_MANIFEST_VERSION = "strata.kojimem.connector_manifest.v1";
+const MANAGED_AGENT_WITNESS_BUNDLE_VERSION = "attexa.managed_agent.witness_bundle.v1";
+const MANAGED_AGENT_POLICY_DECISION_VERSION = "attexa.managed_agent.policy_decision.v1";
+const MANAGED_AGENT_RECEIPT_VERSION = "turnstile.receipt.v1";
+const MANAGED_AGENT_STATE_ROOT_PROTOCOL = "turnstile-state-root-v1";
+const MANAGED_AGENT_GENESIS_ROOT = "0".repeat(64);
 
 export async function verifyCertificateBundleUrl(bundleUrl) {
   const normalizedUrl = normalizeBundleUrl(bundleUrl);
@@ -51,6 +57,12 @@ export function normalizeBundleUrl(value) {
 }
 
 export async function verifyCertificateBundle(bundle, { sourceUrl = "" } = {}) {
+  if (!bundle?.version && bundle?.bundle?.version) {
+    bundle = bundle.bundle;
+  }
+  if (bundle?.version === MANAGED_AGENT_WITNESS_BUNDLE_VERSION) {
+    return verifyManagedAgentWitnessBundle(bundle, { sourceUrl });
+  }
   if (bundle?.version === SUPABASE_CERTIFICATE_BUNDLE_VERSION || String(bundle?.certificate?.version || "").startsWith("strata.supabase.")) {
     return verifySupabaseCertificateBundle(bundle, { sourceUrl });
   }
@@ -705,6 +717,181 @@ function verifyKojimemCertificateBundle(bundle, { sourceUrl = "" } = {}) {
   });
 }
 
+function verifyManagedAgentWitnessBundle(bundle, { sourceUrl = "" } = {}) {
+  const checks = [];
+  const manifest = bundle.manifest || {};
+  const receipts = Array.isArray(bundle.receipts) ? bundle.receipts : [];
+  const evidence = Array.isArray(bundle.evidence) ? bundle.evidence : [];
+  const keyring = bundle.keyring || {};
+  const verifierProfile = bundle.verifier_profile || null;
+  const receiptVerification = verifyManagedAgentReceipts(receipts, keyring, { expectedSessionId: manifest.chain_id || null });
+  const evidenceVerification = verifyManagedAgentEvidence(receipts, evidence);
+  const subjectVerification = verifyManagedAgentSubjects(receipts);
+  const sessionCreatedReceipts = receipts.filter((receipt) => receipt.kind === "managed_agent.session.created");
+  const toolRequestReceipts = receipts.filter((receipt) => receipt.kind === "managed_agent.tool.requested");
+  const toolResultReceipts = receipts.filter((receipt) => receipt.kind === "managed_agent.tool.result_observed");
+  const toolConfirmationReceipts = receipts.filter((receipt) => receipt.kind === "managed_agent.tool.confirmed");
+  const policyReceipts = receipts.filter((receipt) => receipt.kind === "managed_agent.policy.evaluated");
+  const generatedFileReceipts = receipts.filter((receipt) => receipt.kind === "managed_agent.file.generated");
+  const policyPayloads = policyReceipts.map((receipt) => payloadForReceipt(receipt, evidence));
+  const toolFlow = verifyManagedAgentToolFlow({ toolRequestReceipts, toolResultReceipts });
+  const policySemantics = verifyManagedAgentPolicySemantics({ policyReceipts, policyPayloads, toolConfirmationReceipts, toolResultReceipts, evidence });
+  const artifactSemantics = verifyManagedAgentArtifacts({ generatedFileReceipts, evidence });
+  const sessionProfile = managedAgentSessionProfile(sessionCreatedReceipts);
+  const expectedChainId = manifest.org_id && manifest.anthropic_session_id ? `org:${manifest.org_id}:session:${manifest.anthropic_session_id}` : null;
+  const recomputedBundleDigest = digestValue(withoutBundleDigest(bundle));
+
+  add(checks, "managed_agent.bundle.version", bundle.version === MANAGED_AGENT_WITNESS_BUNDLE_VERSION, {
+    expected: MANAGED_AGENT_WITNESS_BUNDLE_VERSION,
+    actual: bundle.version || null
+  });
+  add(checks, "managed_agent.bundle.digest", Boolean(bundle.bundle_digest) && bundle.bundle_digest === recomputedBundleDigest, {
+    expected: bundle.bundle_digest || null,
+    actual: recomputedBundleDigest
+  });
+  add(checks, "managed_agent.manifest.present", Boolean(bundle.manifest), {});
+  add(checks, "managed_agent.manifest.workflow", manifest.workflow_id === "managed-agent.observed" && manifest.assurance_mode === "observed-l1", {
+    workflow_id: manifest.workflow_id || null,
+    assurance_mode: manifest.assurance_mode || null
+  });
+  add(checks, "managed_agent.manifest.session_binding", Boolean(expectedChainId) && manifest.chain_id === expectedChainId, {
+    expected: expectedChainId,
+    actual: manifest.chain_id || null
+  });
+  add(checks, "managed_agent.keyring.present", Object.keys(keyring).length > 0, {
+    key_count: Object.keys(keyring).length
+  });
+  add(checks, "managed_agent.verifier_profile.present", Boolean(verifierProfile), {});
+  if (verifierProfile) {
+    add(checks, "managed_agent.verifier_profile.binding", verifierProfile.profile_id === manifest.profile_id && verifierProfile.workflow_id === manifest.workflow_id && verifierProfile.assurance_mode === manifest.assurance_mode, {
+      verifier_profile_id: verifierProfile.profile_id || null,
+      manifest_profile_id: manifest.profile_id || null,
+      verifier_workflow_id: verifierProfile.workflow_id || null,
+      manifest_workflow_id: manifest.workflow_id || null
+    });
+  }
+
+  add(checks, "managed_agent.receipts.present", receipts.length > 0, { receipt_count: receipts.length });
+  add(checks, "managed_agent.receipt_chain.signatures", receiptVerification.ok, {
+    errors: receiptVerification.errors,
+    receipt_count: receiptVerification.receipt_count,
+    final_state_root: receiptVerification.final_state_root
+  });
+  add(checks, "managed_agent.receipt_chain.local_summary", !bundle.verification || bundle.verification.ok === receiptVerification.ok, {
+    bundle_verification_ok: bundle.verification?.ok ?? null,
+    verifier_ok: receiptVerification.ok
+  });
+  if (bundle.verification?.final_state_root) {
+    add(checks, "managed_agent.receipt_chain.final_root", bundle.verification.final_state_root === receiptVerification.final_state_root, {
+      expected: bundle.verification.final_state_root,
+      actual: receiptVerification.final_state_root
+    });
+  }
+  add(checks, "managed_agent.evidence.payload_digests", evidenceVerification.ok, {
+    errors: evidenceVerification.errors,
+    evidence_count: evidence.length
+  });
+  add(checks, "managed_agent.receipt_subjects.digest_binding", subjectVerification.ok, {
+    errors: subjectVerification.errors
+  });
+
+  add(checks, "managed_agent.session.created", sessionCreatedReceipts.length > 0, {
+    count: sessionCreatedReceipts.length,
+    agent_profile_id: sessionProfile.agent_profile_id || null,
+    policy_mode: sessionProfile.policy_mode || null
+  });
+  if (!sessionProfile.agent_profile_id) {
+    warn(checks, "managed_agent.session.agent_profile", "No Agent Profile admission receipt was found; receipt-chain evidence still verifies but profile-specific admission metadata is absent.");
+  }
+
+  add(checks, "managed_agent.tool_flow.results_match_requests", toolFlow.ok, {
+    errors: toolFlow.errors,
+    tool_request_count: toolRequestReceipts.length,
+    tool_result_count: toolResultReceipts.length
+  });
+  if (policyReceipts.length > 0) {
+    add(checks, "managed_agent.l2.policy_receipts_present", true, { count: policyReceipts.length });
+    add(checks, "managed_agent.l2.policy_decision_integrity", policySemantics.integrity.ok, {
+      errors: policySemantics.integrity.errors
+    });
+    add(checks, "managed_agent.l2.denied_actions_not_executed", policySemantics.deniedActions.ok, {
+      errors: policySemantics.deniedActions.errors
+    });
+    add(checks, "managed_agent.l2.denied_actions_confirmed_denied", policySemantics.deniedConfirmations.ok, {
+      errors: policySemantics.deniedConfirmations.errors
+    });
+    if (policySemantics.deniedConfirmations.missing.length > 0) {
+      warn(checks, "managed_agent.l2.denied_actions_pending_confirmation", `Denied policy decisions without user.tool_confirmation receipts: ${policySemantics.deniedConfirmations.missing.join(", ")}`);
+    }
+    if (policySemantics.remoteQuorum.count > 0) {
+      add(checks, "managed_agent.l2.remote_quorum_threshold", policySemantics.remoteQuorum.ok, {
+        errors: policySemantics.remoteQuorum.errors,
+        remote_quorum_count: policySemantics.remoteQuorum.count
+      });
+      warn(checks, "managed_agent.l2.remote_quorum_signature_verification", "Remote Managed Agent policy quorum public keys are not embedded in this bundle profile; the verifier checks quorum threshold and digest binding but cannot yet re-verify remote policy signatures offline.");
+    }
+  } else {
+    warn(checks, "managed_agent.l2.policy_receipts_present", "No Managed Agent L2 policy decision receipts are included; this bundle verifies observed-L1 evidence only.");
+  }
+
+  if (generatedFileReceipts.length > 0) {
+    add(checks, "managed_agent.artifacts.generated_hashes", artifactSemantics.ok, {
+      errors: artifactSemantics.errors,
+      generated_file_count: generatedFileReceipts.length
+    });
+  } else {
+    warn(checks, "managed_agent.artifacts.generated_hashes", "No generated artifact receipts are included in this bundle.");
+  }
+  verifyDurablePublication(checks, bundle, sourceUrl);
+
+  const latestPolicy = policyPayloads.filter(Boolean).at(-1) || null;
+  return result({
+    sourceUrl,
+    certificate: {
+      url: sourceUrl || null,
+      digest: bundle.bundle_digest || recomputedBundleDigest,
+      issued_at: manifest.created_at || receipts[0]?.issued_at || null,
+      action: {
+        workflow_id: manifest.workflow_id || null,
+        anthropic_session_id: manifest.anthropic_session_id || null,
+        method: "Claude Managed Agents event stream"
+      },
+      policy: latestPolicy ? {
+        decision: latestPolicy.decision || null,
+        reason: latestPolicy.reason || null,
+        policy_id: latestPolicy.policy_id || null,
+        policy_epoch_id: latestPolicy.policy_epoch_id || null,
+        policy_bundle_digest: latestPolicy.policy_bundle_digest || null,
+        decision_source: latestPolicy.decision_source || null,
+        policy_witness_quorum: managedAgentPolicyQuorumLabel(latestPolicy.remote_quorum)
+      } : null,
+      proof: {
+        assurance_mode: manifest.assurance_mode || null,
+        receipt_count: receipts.length,
+        final_state_root: receiptVerification.final_state_root,
+        verified: receiptVerification.ok,
+        policy_decision_count: policyReceipts.length,
+        generated_artifact_count: generatedFileReceipts.length
+      },
+      durable_publication: bundle.durable_publication || null
+    },
+    evidence: buildManagedAgentEvidenceSummary({
+      bundle,
+      manifest,
+      receipts,
+      keyring,
+      receiptVerification,
+      sessionProfile,
+      policyPayloads,
+      generatedFileReceipts,
+      toolRequestReceipts,
+      toolResultReceipts,
+      toolConfirmationReceipts
+    }),
+    checks
+  });
+}
+
 export function renderMarkdownReport(report) {
   const verdict = report.ok ? "VALID" : "INVALID";
   const lines = [
@@ -760,6 +947,316 @@ function verifyDurablePublication(checks, bundle, sourceUrl) {
       actual: sourceUrl
     });
   }
+}
+
+function withoutBundleDigest(bundle) {
+  const { bundle_digest, ...rest } = bundle || {};
+  return rest;
+}
+
+function verifyManagedAgentReceipts(receipts, keyring, { expectedSessionId = null } = {}) {
+  const errors = [];
+  let previousRoot = MANAGED_AGENT_GENESIS_ROOT;
+  let finalStateRoot = previousRoot;
+
+  if (!Array.isArray(receipts)) {
+    return { ok: false, errors: ["receipts must be an array"], receipt_count: 0, final_state_root: finalStateRoot };
+  }
+
+  for (let index = 0; index < receipts.length; index += 1) {
+    const receipt = receipts[index] || {};
+    try {
+      if (receipt.version !== MANAGED_AGENT_RECEIPT_VERSION) errors.push(`receipt ${index} invalid version: ${receipt.version}`);
+      if (expectedSessionId && receipt.session_id !== expectedSessionId) errors.push(`receipt ${index} session_id mismatch`);
+      if (receipt.prev_state_root !== previousRoot) errors.push(`receipt ${index} prev_state_root mismatch`);
+      if (receipt.step_index !== index) errors.push(`receipt ${index} step_index mismatch`);
+      const expectedRoot = computeManagedAgentStateRoot(receipt);
+      if (receipt.state_root !== expectedRoot) errors.push(`receipt ${index} state_root mismatch`);
+      if (!Array.isArray(receipt.signatures) || receipt.signatures.length === 0) {
+        errors.push(`receipt ${index} missing signatures`);
+      }
+      for (const signature of receipt.signatures || []) {
+        const publicKey = keyring[signature.key_id];
+        if (!publicKey) {
+          errors.push(`receipt ${index} unknown signer ${signature.key_id}`);
+        } else if (!verifyEd25519(managedAgentReceiptSigningMessage(receipt), signature.sig, publicKey)) {
+          errors.push(`receipt ${index} invalid signature ${signature.key_id}`);
+        }
+      }
+      previousRoot = receipt.state_root;
+      finalStateRoot = receipt.state_root;
+    } catch (error) {
+      errors.push(`receipt ${index} verification error: ${error.message}`);
+    }
+  }
+
+  return { ok: errors.length === 0, errors, receipt_count: receipts.length, final_state_root: finalStateRoot };
+}
+
+function computeManagedAgentStateRoot(receipt) {
+  return digestValue({
+    protocol: MANAGED_AGENT_STATE_ROOT_PROTOCOL,
+    prev_state_root: receipt.prev_state_root,
+    payload_digest: managedAgentReceiptPayloadDigest(receipt),
+    signatures: receipt.signatures || []
+  });
+}
+
+function managedAgentReceiptSigningMessage(receipt) {
+  return `${MANAGED_AGENT_RECEIPT_VERSION}\n${managedAgentReceiptPayloadDigest(receipt)}`;
+}
+
+function managedAgentReceiptPayloadDigest(receipt) {
+  return digestValue(managedAgentReceiptPayload(receipt));
+}
+
+function managedAgentReceiptPayload(receipt) {
+  const { signatures: _signatures, state_root: _stateRoot, ...payload } = receipt || {};
+  return payload;
+}
+
+function verifyManagedAgentEvidence(receipts, evidence) {
+  const errors = [];
+  const evidenceByKey = managedAgentEvidenceByKey(evidence);
+  for (let index = 0; index < receipts.length; index += 1) {
+    const receipt = receipts[index];
+    const eventKey = receipt?.body?.event_key;
+    if (!eventKey) {
+      errors.push(`receipt ${index} missing event_key`);
+      continue;
+    }
+    const item = evidenceByKey.get(eventKey);
+    if (!item) {
+      errors.push(`receipt ${index} missing evidence for ${eventKey}`);
+      continue;
+    }
+    if (item.payload_digest !== receipt.body?.payload_digest) {
+      errors.push(`receipt ${index} evidence payload_digest mismatch`);
+    }
+    if (Object.prototype.hasOwnProperty.call(item, "payload") && digestValue(item.payload) !== receipt.body?.payload_digest) {
+      errors.push(`receipt ${index} evidence payload hash mismatch`);
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+function verifyManagedAgentSubjects(receipts) {
+  const errors = [];
+  for (let index = 0; index < receipts.length; index += 1) {
+    const receipt = receipts[index];
+    const subject = receipt?.body?.subject;
+    if (!subject) {
+      errors.push(`receipt ${index} missing subject`);
+      continue;
+    }
+    if (digestValue(subject) !== receipt.body?.subject_digest) errors.push(`receipt ${index} subject_digest mismatch`);
+    if (subject.payload_digest !== receipt.body?.payload_digest) errors.push(`receipt ${index} subject payload_digest mismatch`);
+    if (subject.session_id !== receipt.session_id) errors.push(`receipt ${index} subject session_id mismatch`);
+    if (subject.step_index !== receipt.step_index) errors.push(`receipt ${index} subject step_index mismatch`);
+    if (subject.receipt_class !== receipt.kind) errors.push(`receipt ${index} subject receipt_class mismatch`);
+    if (subject.source?.event_type !== receipt.body?.event_type) errors.push(`receipt ${index} subject event_type mismatch`);
+    if ((subject.source?.event_id || null) !== (receipt.body?.event_id || null)) errors.push(`receipt ${index} subject event_id mismatch`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+function managedAgentEvidenceByKey(evidence) {
+  return new Map((Array.isArray(evidence) ? evidence : []).filter((item) => item?.event_key).map((item) => [item.event_key, item]));
+}
+
+function payloadForReceipt(receipt, evidence) {
+  const eventKey = receipt?.body?.event_key;
+  if (!eventKey) return null;
+  return managedAgentEvidenceByKey(evidence).get(eventKey)?.payload || null;
+}
+
+function managedAgentSessionProfile(sessionCreatedReceipts) {
+  const receipt = sessionCreatedReceipts.at(-1) || null;
+  const summary = receipt?.body?.typed_summary || {};
+  return {
+    agent_profile_id: summary.profile_id || null,
+    policy_mode: summary.policy_mode || null,
+    skill_ids: summary.skill_ids || [],
+    file_count: summary.file_count || 0,
+    github_repo_count: summary.github_repo_count || 0
+  };
+}
+
+function verifyManagedAgentToolFlow({ toolRequestReceipts, toolResultReceipts }) {
+  const errors = [];
+  const requestIds = new Set(toolRequestReceipts.map((receipt) => receipt.body?.event_id).filter(Boolean));
+  for (const receipt of toolResultReceipts) {
+    const summary = receipt.body?.typed_summary || {};
+    const toolUseId = summary.tool_use_id || summary.mcp_tool_use_id || summary.custom_tool_use_id || null;
+    if (toolUseId && !requestIds.has(toolUseId)) {
+      errors.push(`tool result at step ${receipt.step_index} references unknown request ${toolUseId}`);
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+function verifyManagedAgentPolicySemantics({ policyReceipts, policyPayloads, toolConfirmationReceipts, toolResultReceipts, evidence }) {
+  const integrityErrors = [];
+  const deniedExecutionErrors = [];
+  const deniedConfirmationErrors = [];
+  const missingDeniedConfirmations = [];
+  const remoteQuorumErrors = [];
+  const confirmationsByToolUse = new Map();
+  const resultsByToolUse = new Map();
+
+  for (const receipt of toolConfirmationReceipts) {
+    const payload = payloadForReceipt(receipt, evidence);
+    const toolUseId = payload?.tool_use_id || receipt.body?.typed_summary?.tool_use_id || null;
+    if (toolUseId) confirmationsByToolUse.set(toolUseId, payload || receipt.body?.typed_summary || {});
+  }
+  for (const receipt of toolResultReceipts) {
+    const summary = receipt.body?.typed_summary || {};
+    const payload = payloadForReceipt(receipt, evidence);
+    const toolUseId = summary.tool_use_id || summary.mcp_tool_use_id || summary.custom_tool_use_id || null;
+    if (!toolUseId) continue;
+    if (!resultsByToolUse.has(toolUseId)) resultsByToolUse.set(toolUseId, []);
+    resultsByToolUse.get(toolUseId).push({ receipt, payload });
+  }
+
+  let remoteQuorumCount = 0;
+  for (let index = 0; index < policyReceipts.length; index += 1) {
+    const receipt = policyReceipts[index];
+    const payload = policyPayloads[index] || null;
+    const summary = receipt.body?.typed_summary || {};
+    if (!payload) {
+      integrityErrors.push(`policy receipt ${receipt.step_index} missing evidence payload`);
+      continue;
+    }
+    if (payload.version !== MANAGED_AGENT_POLICY_DECISION_VERSION) integrityErrors.push(`policy receipt ${receipt.step_index} invalid decision version: ${payload.version}`);
+    if (payload.request && digestValue(payload.request) !== payload.request_digest) integrityErrors.push(`policy receipt ${receipt.step_index} request_digest mismatch`);
+    if (summary.decision !== payload.decision) integrityErrors.push(`policy receipt ${receipt.step_index} typed decision mismatch`);
+    if (summary.policy_bundle_digest !== payload.policy_bundle_digest) integrityErrors.push(`policy receipt ${receipt.step_index} policy_bundle_digest mismatch`);
+    if ((summary.event_id || null) !== (payload.event_id || null)) integrityErrors.push(`policy receipt ${receipt.step_index} event_id mismatch`);
+
+    if (payload.decision === "deny" && payload.event_id) {
+      for (const result of resultsByToolUse.get(payload.event_id) || []) {
+        if (result.receipt.step_index > receipt.step_index && result.payload?.is_error !== true) {
+          deniedExecutionErrors.push(`denied tool ${payload.event_id} has non-error tool result receipt after denial`);
+        }
+      }
+      const confirmation = confirmationsByToolUse.get(payload.event_id);
+      if (!confirmation) {
+        missingDeniedConfirmations.push(payload.event_id);
+      } else if (confirmation.result !== "deny") {
+        deniedConfirmationErrors.push(`denied tool ${payload.event_id} has non-deny user.tool_confirmation result: ${confirmation.result}`);
+      }
+    }
+
+    if (payload.remote_quorum) {
+      remoteQuorumCount += 1;
+      const quorum = payload.remote_quorum;
+      if (quorum.decision !== payload.decision) remoteQuorumErrors.push(`policy receipt ${receipt.step_index} remote quorum decision mismatch`);
+      if (quorum.request_digest !== payload.request_digest) remoteQuorumErrors.push(`policy receipt ${receipt.step_index} remote quorum request_digest mismatch`);
+      const threshold = Number(quorum.threshold || 0);
+      const countForDecision = payload.decision === "deny" ? quorum.deny_count : payload.decision === "allow" ? quorum.allow_count : quorum.requires_human_count;
+      if (!threshold || Number(countForDecision || 0) < threshold) remoteQuorumErrors.push(`policy receipt ${receipt.step_index} remote quorum threshold not met`);
+      if (!(quorum.decisions || []).every((decision) => decision.subject && decision.signature?.signature)) remoteQuorumErrors.push(`policy receipt ${receipt.step_index} remote quorum decisions missing subject/signature`);
+    }
+  }
+
+  return {
+    integrity: { ok: integrityErrors.length === 0, errors: integrityErrors },
+    deniedActions: { ok: deniedExecutionErrors.length === 0, errors: deniedExecutionErrors },
+    deniedConfirmations: { ok: deniedConfirmationErrors.length === 0, errors: deniedConfirmationErrors, missing: missingDeniedConfirmations },
+    remoteQuorum: { ok: remoteQuorumErrors.length === 0, errors: remoteQuorumErrors, count: remoteQuorumCount }
+  };
+}
+
+function verifyManagedAgentArtifacts({ generatedFileReceipts, evidence }) {
+  const errors = [];
+  for (const receipt of generatedFileReceipts) {
+    const payload = payloadForReceipt(receipt, evidence);
+    const summary = receipt.body?.typed_summary || {};
+    if (!payload) {
+      errors.push(`generated file receipt ${receipt.step_index} missing evidence payload`);
+      continue;
+    }
+    if (payload.content_sha256 !== summary.content_sha256) errors.push(`generated file receipt ${receipt.step_index} content_sha256 mismatch`);
+    if (summary.downloadable === true && !isSha256Hex(summary.content_sha256)) errors.push(`generated file receipt ${receipt.step_index} downloadable artifact missing sha256`);
+    if (payload.file?.id && summary.file_id && payload.file.id !== summary.file_id) errors.push(`generated file receipt ${receipt.step_index} file_id mismatch`);
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+function isSha256Hex(value) {
+  return /^[a-f0-9]{64}$/i.test(String(value || ""));
+}
+
+function managedAgentPolicyQuorumLabel(quorum) {
+  if (!quorum) return null;
+  const count = quorum.decision === "deny" ? quorum.deny_count : quorum.decision === "allow" ? quorum.allow_count : quorum.requires_human_count;
+  return `${count || 0}-of-${quorum.total_witnesses || 0}`;
+}
+
+function buildManagedAgentEvidenceSummary({ bundle, manifest, receipts, keyring, receiptVerification, sessionProfile, policyPayloads, generatedFileReceipts, toolRequestReceipts, toolResultReceipts, toolConfirmationReceipts }) {
+  const validPolicyPayloads = policyPayloads.filter(Boolean);
+  const latestPolicy = validPolicyPayloads.at(-1) || null;
+  return {
+    managed_agent: {
+      anthropic_session_id: manifest.anthropic_session_id || null,
+      chain_id: manifest.chain_id || null,
+      workflow_id: manifest.workflow_id || null,
+      witness_profile_id: manifest.profile_id || null,
+      agent_profile_id: sessionProfile.agent_profile_id || null,
+      policy_mode: sessionProfile.policy_mode || null,
+      skill_ids: sessionProfile.skill_ids || [],
+      receipt_count: receipts.length,
+      final_state_root: receiptVerification.final_state_root,
+      tool_request_count: toolRequestReceipts.length,
+      tool_result_count: toolResultReceipts.length,
+      tool_confirmation_count: toolConfirmationReceipts.length,
+      policy_decision_count: validPolicyPayloads.length,
+      generated_artifact_count: generatedFileReceipts.length
+    },
+    action: {
+      tool: "managed_agent.session",
+      provider: "Claude Managed Agents",
+      provider_status: latestPolicy?.decision || "observed",
+      side_effect_executed: false
+    },
+    l1: {
+      quorum: `1-of-${Object.keys(keyring).length || 1} local observer`,
+      witness_count: Object.keys(keyring).length,
+      observed_attestation_count: 0,
+      receipt_count: receipts.length,
+      checkpoint_present: receipts.some((receipt) => receipt.kind === "managed_agent.session.checkpoint"),
+      final_state_root: receiptVerification.final_state_root
+    },
+    l2: latestPolicy ? {
+      policy_decision: latestPolicy.decision || null,
+      policy_witness_quorum: managedAgentPolicyQuorumLabel(latestPolicy.remote_quorum) || (latestPolicy.decision_source === "local" ? "local evaluator" : null),
+      policy_epoch_id: latestPolicy.policy_epoch_id || null,
+      policy_bundle_digest: latestPolicy.policy_bundle_digest || null,
+      tier: latestPolicy.decision_source || "local"
+    } : null,
+    artifacts: {
+      generated_count: generatedFileReceipts.length,
+      files: generatedFileReceipts.map((receipt) => ({
+        file_id: receipt.body?.typed_summary?.file_id || null,
+        filename: receipt.body?.typed_summary?.filename || null,
+        content_sha256: receipt.body?.typed_summary?.content_sha256 || null,
+        downloadable: receipt.body?.typed_summary?.downloadable === true
+      }))
+    },
+    operator: {
+      operator_id: "local-authenticated-demo-user",
+      tenant_id: manifest.org_id || null,
+      assistant_id: sessionProfile.agent_profile_id || null
+    },
+    durable_publication: bundle.durable_publication ? {
+      backend: bundle.durable_publication.backend || null,
+      scope: bundle.durable_publication.scope || null,
+      bundle_url: bundle.durable_publication.bundle_url || null,
+      key: bundle.durable_publication.key || null,
+      retention_mode: bundle.durable_publication.retention_mode || null,
+      no_overwrite: bundle.durable_publication.no_overwrite === true
+    } : null
+  };
 }
 
 function buildEvidenceSummary(bundle, certificate) {

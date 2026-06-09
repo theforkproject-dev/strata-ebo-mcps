@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer } from "node:http";
-import { normalizeBundleUrl, verifyCertificateBundleUrl } from "../src/verify/certificate-verifier.js";
+import { normalizeBundleUrl, verifyCertificateBundle, verifyCertificateBundleUrl } from "../src/verify/certificate-verifier.js";
 
 const host = process.env.HOST || "0.0.0.0";
 const port = Number(process.env.PORT || 8080);
@@ -23,8 +23,17 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "POST" && url.pathname === "/api/verify") {
       const body = await readJson(request);
+      if (body.bundle && typeof body.bundle === "object") {
+        const report = await verifyCertificateBundle(body.bundle, { sourceUrl: body.source_url || "inline bundle JSON" });
+        return json(response, report.ok ? 200 : 422, report);
+      }
+      if (body.bundle_json && typeof body.bundle_json === "string") {
+        const bundle = JSON.parse(body.bundle_json);
+        const report = await verifyCertificateBundle(bundle, { sourceUrl: body.source_url || "inline bundle JSON" });
+        return json(response, report.ok ? 200 : 422, report);
+      }
       if (!body.bundle_url || typeof body.bundle_url !== "string") {
-        return json(response, 400, { ok: false, error: "bundle_url is required" });
+        return json(response, 400, { ok: false, error: "bundle_url or bundle is required" });
       }
       const normalizedUrl = normalizeBundleUrl(body.bundle_url);
       const report = await verifyCertificateBundleUrl(normalizedUrl);

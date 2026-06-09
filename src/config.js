@@ -7,7 +7,7 @@ export function loadConfig(env = process.env) {
 
   const gatewayKind = String(env.STRATA_GATEWAY_KIND || env.GATEWAY_KIND || env.MCP_GATEWAY_KIND || "email").toLowerCase();
   const sessionSecret = env.MCP_SESSION_SECRET || randomBytes(32).toString("hex");
-  const dataDir = env.DATA_DIR || (gatewayKind === "kojimem" ? "artifacts/kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "artifacts/nango-supabase-mcp" : gatewayKind === "supabase" ? "artifacts/supabase-mcp" : "artifacts/email-mcp");
+  const dataDir = env.DATA_DIR || (gatewayKind === "managed-agent-policy" ? "artifacts/managed-agent-policy-gateway" : gatewayKind === "kojimem" ? "artifacts/kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "artifacts/nango-supabase-mcp" : gatewayKind === "supabase" ? "artifacts/supabase-mcp" : "artifacts/email-mcp");
   const publicBaseUrl = trimSlash(env.PUBLIC_BASE_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8899"}`);
   const registryUrl = trimSlash(env.REGISTRY_URL || "");
   const registryTrustAnchorPublicKeyPem = env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM
@@ -94,12 +94,18 @@ export function loadConfig(env = process.env) {
       epochId: policyBundleEpochId,
       expectedDigest: env.POLICY_BUNDLE_DIGEST || ""
     },
+    managedAgentPolicy: {
+      bundleFile: env.MANAGED_AGENT_POLICY_BUNDLE_FILE || "policies/managed-agent-policy-epoch-001.json",
+      bundleUrl: trimSlash(env.MANAGED_AGENT_POLICY_BUNDLE_URL || ""),
+      epochId: env.MANAGED_AGENT_POLICY_EPOCH_ID || "managed-agent-policy-epoch-001",
+      expectedDigest: env.MANAGED_AGENT_POLICY_BUNDLE_DIGEST || ""
+    },
     tenant: {
       id: env.TENANT_ID || "default"
     },
     gateway: {
-      id: env.GATEWAY_ID || bundledGateway?.gateway_id || (gatewayKind === "kojimem" ? "gateway:kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "gateway:nango-supabase-mcp" : gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
-      keyId: env.GATEWAY_KEY_ID || bundledGateway?.key_id || (gatewayKind === "kojimem" ? "gateway:kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "gateway:nango-supabase-mcp" : gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
+      id: env.GATEWAY_ID || bundledGateway?.gateway_id || (gatewayKind === "managed-agent-policy" ? "gateway:managed-agent-policy" : gatewayKind === "kojimem" ? "gateway:kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "gateway:nango-supabase-mcp" : gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
+      keyId: env.GATEWAY_KEY_ID || bundledGateway?.key_id || (gatewayKind === "managed-agent-policy" ? "gateway:managed-agent-policy" : gatewayKind === "kojimem" ? "gateway:kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "gateway:nango-supabase-mcp" : gatewayKind === "supabase" ? "gateway:supabase-mcp" : "gateway:email-mcp"),
       keyFile: env.GATEWAY_KEY_FILE || `${dataDir}/keys/gateway.key.json`,
       keyJson: env.GATEWAY_KEY_JSON || "",
       privateKeyPem: env.GATEWAY_PRIVATE_KEY_PEM || bundledGateway?.private_key_pem || "",
@@ -121,7 +127,7 @@ export function loadConfig(env = process.env) {
         enabled: truthy(env.GATEWAY_SIGNED_WITNESS_REQUESTS_ENABLED || env.WITNESS_SIGN_REQUESTS_ENABLED),
         witnessEpochId: env.WITNESS_EPOCH_ID || "",
         registryEpochId: env.REGISTRY_EPOCH_ID || "",
-        workflowId: env.WITNESS_WORKFLOW_ID || (gatewayKind === "kojimem" ? "agent-handoff.fraud-signal-exchange" : gatewayKind === "supabase" || gatewayKind === "nango-supabase" ? "supabase.query" : "email.send")
+        workflowId: env.WITNESS_WORKFLOW_ID || (gatewayKind === "managed-agent-policy" ? "managed-agent.observed" : gatewayKind === "kojimem" ? "agent-handoff.fraud-signal-exchange" : gatewayKind === "supabase" || gatewayKind === "nango-supabase" ? "supabase.query" : "email.send")
       }
     },
     policyWitnesses: parseWitnessUrls(env.POLICY_WITNESS_URLS || "", "p"),

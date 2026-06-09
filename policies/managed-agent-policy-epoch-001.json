@@ -1,0 +1,52 @@
+{
+  "version": "attexa.managed_agent.policy_bundle.v1",
+  "policy_id": "managed-agent-policy.v1",
+  "epoch_id": "managed-agent-policy-epoch-001",
+  "domains": [
+    "policy.managed_agent.tool",
+    "policy.managed_agent.memory",
+    "policy.managed_agent.github",
+    "policy.managed_agent.outcome"
+  ],
+  "rules": {
+    "deny_bash_patterns": [
+      "rm\\s+-rf",
+      "curl\\b[^|]*\\|\\s*(sh|bash)",
+      "\\bcat\\s+[^;&|]*~/(\\.ssh|\\.aws)",
+      "\\b(cat|less|more|tail|head)\\s+[^;&|]*/etc/passwd",
+      "\\bprintenv\\b",
+      "(^|[;&|])\\s*env\\b"
+    ],
+    "deny_bash_reasons": {
+      "rm\\s+-rf": "Destructive recursive delete is blocked by policy.",
+      "curl\\b[^|]*\\|\\s*(sh|bash)": "Piping remote content into a shell is blocked by policy.",
+      "\\bcat\\s+[^;&|]*~/(\\.ssh|\\.aws)": "Reading local SSH or AWS credential paths is blocked by policy.",
+      "\\b(cat|less|more|tail|head)\\s+[^;&|]*/etc/passwd": "Reading system account files is blocked by policy.",
+      "\\bprintenv\\b": "Dumping process environment variables is blocked by policy.",
+      "(^|[;&|])\\s*env\\b": "Running env to inspect or alter environment variables is blocked by policy."
+    },
+    "allow_write_path_prefixes": [
+      "/mnt/session/outputs/",
+      "/tmp/"
+    ],
+    "deny_write_paths": [
+      "/workspace/release-note.md"
+    ],
+    "deny_write_reasons": {
+      "/workspace/release-note.md": "This workspace path is reserved for controlled release workflows. Use /mnt/session/outputs/ for generated deliverables."
+    },
+    "require_human_for_tools": [
+      "web_fetch",
+      "web_search"
+    ],
+    "require_human_for_mcp_tools": [
+      "delete_memory",
+      "store_memory"
+    ],
+    "allow_tools": [
+      "read",
+      "glob",
+      "grep"
+    ]
+  }
+}

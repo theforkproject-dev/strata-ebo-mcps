@@ -36,6 +36,29 @@ The gateway also signs the active tenant admission manifest with `operator-admis
 - `strata://certificate/latest`: Latest verified email certificate metadata.
 - `strata://recipient-verification/latest`: Latest recipient verification receipt, if one exists.
 
+## Certificate Verifier
+
+The open-source verifier lives in `src/verify/certificate-verifier.js` and is served by `bin/verifier-web.js`.
+
+It currently verifies these bundle schemas:
+
+- `strata.email.certificate_bundle.v1`
+- `strata.supabase.certificate_bundle.v1`
+- `strata.kojimem.certificate_bundle.v1`
+- `attexa.managed_agent.witness_bundle.v1`
+
+The verifier API accepts either a published bundle URL or an inline bundle object:
+
+```json
+{ "bundle_url": "https://.../bundle.json" }
+```
+
+```json
+{ "bundle": { "version": "attexa.managed_agent.witness_bundle.v1" } }
+```
+
+Managed Agent bundle verification re-derives the signed receipt chain, state roots, evidence payload hashes, session/profile metadata, L2 policy decision receipts, deny/no-execution semantics, and generated artifact hash commitments. Remote Managed Agent L2 quorum signatures are checked for threshold/digest binding when embedded; full offline signature re-verification needs policy-witness public keys embedded in a future bundle profile.
+
 ## Local Demo Without Sending
 
 ```bash
