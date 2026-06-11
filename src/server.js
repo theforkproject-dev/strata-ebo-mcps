@@ -7,6 +7,7 @@ import { EmailMcpServer, MCP_PROTOCOL_VERSION } from "./mcp-server.js";
 import { SupabaseMcpServer } from "./supabase-mcp-server.js";
 import { KojimemMcpServer } from "./kojimem-mcp-server.js";
 import { ManagedAgentPolicyGateway } from "./managed-agent-policy-gateway.js";
+import { ResearchMcpServer } from "./research-mcp-server.js";
 import { errorResponse, isNotification, parseJsonRpc, successResponse, validateRequest } from "./jsonrpc.js";
 import { SessionManager } from "./session.js";
 import { OAuthServer } from "./oauth/server.js";
@@ -15,7 +16,9 @@ import { NangoSupabaseConnect } from "./nango-supabase/connect.js";
 import { loadCertificateBundle, loadRecipientVerifications } from "./certificates/bundle.js";
 
 const config = loadConfig();
-const mcp = config.gatewayKind === "managed-agent-policy"
+const mcp = config.gatewayKind === "research"
+  ? new ResearchMcpServer(config)
+  : config.gatewayKind === "managed-agent-policy"
   ? new ManagedAgentPolicyGateway(config)
   : config.gatewayKind === "kojimem"
   ? new KojimemMcpServer(config)
@@ -45,6 +48,15 @@ const server = createServer(async (request, response) => {
           read_only: config.supabase.readOnly,
           features: config.supabase.features,
           upstream_calls_enabled: config.supabase.upstreamCallsEnabled
+        } : undefined,
+        research_connector: config.gatewayKind === "research" ? {
+          assurance: config.research.assurance,
+          xsearch_model: config.research.xsearchModel,
+          vendors: {
+            firecrawl: Boolean(config.research.firecrawlApiKey),
+            perplexity: Boolean(config.research.perplexityApiKey),
+            openrouter: Boolean(config.research.openrouterApiKey)
+          }
         } : undefined,
         kojimem_connector: config.gatewayKind === "kojimem" ? {
           connector_id: config.kojimem.connectorId,
