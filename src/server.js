@@ -8,6 +8,7 @@ import { SupabaseMcpServer } from "./supabase-mcp-server.js";
 import { KojimemMcpServer } from "./kojimem-mcp-server.js";
 import { ManagedAgentPolicyGateway } from "./managed-agent-policy-gateway.js";
 import { ResearchMcpServer } from "./research-mcp-server.js";
+import { SharepointMcpServer } from "./sharepoint-mcp-server.js";
 import { errorResponse, isNotification, parseJsonRpc, successResponse, validateRequest } from "./jsonrpc.js";
 import { SessionManager } from "./session.js";
 import { OAuthServer } from "./oauth/server.js";
@@ -18,6 +19,8 @@ import { loadCertificateBundle, loadRecipientVerifications } from "./certificate
 const config = loadConfig();
 const mcp = config.gatewayKind === "research"
   ? new ResearchMcpServer(config)
+  : config.gatewayKind === "sharepoint"
+  ? new SharepointMcpServer(config)
   : config.gatewayKind === "managed-agent-policy"
   ? new ManagedAgentPolicyGateway(config)
   : config.gatewayKind === "kojimem"
@@ -57,6 +60,13 @@ const server = createServer(async (request, response) => {
             perplexity: Boolean(config.research.perplexityApiKey),
             openrouter: Boolean(config.research.openrouterApiKey)
           }
+        } : undefined,
+        sharepoint_connector: config.gatewayKind === "sharepoint" ? {
+          assurance: config.sharepoint.assurance,
+          provider: config.sharepoint.providerConfigKey,
+          connection_configured: Boolean(config.sharepoint.connectionId),
+          nango_configured: Boolean(config.nango.secretKey),
+          default_site: config.sharepoint.defaultSiteId
         } : undefined,
         kojimem_connector: config.gatewayKind === "kojimem" ? {
           connector_id: config.kojimem.connectorId,

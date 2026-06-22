@@ -7,7 +7,7 @@ export function loadConfig(env = process.env) {
 
   const gatewayKind = String(env.STRATA_GATEWAY_KIND || env.GATEWAY_KIND || env.MCP_GATEWAY_KIND || "email").toLowerCase();
   const sessionSecret = env.MCP_SESSION_SECRET || randomBytes(32).toString("hex");
-  const dataDir = env.DATA_DIR || (gatewayKind === "research" ? "artifacts/research-mcp" : gatewayKind === "managed-agent-policy" ? "artifacts/managed-agent-policy-gateway" : gatewayKind === "kojimem" ? "artifacts/kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "artifacts/nango-supabase-mcp" : gatewayKind === "supabase" ? "artifacts/supabase-mcp" : "artifacts/email-mcp");
+  const dataDir = env.DATA_DIR || (gatewayKind === "research" ? "artifacts/research-mcp" : gatewayKind === "managed-agent-policy" ? "artifacts/managed-agent-policy-gateway" : gatewayKind === "kojimem" ? "artifacts/kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "artifacts/nango-supabase-mcp" : gatewayKind === "supabase" ? "artifacts/supabase-mcp" : gatewayKind === "sharepoint" ? "artifacts/sharepoint-mcp" : "artifacts/email-mcp");
   const publicBaseUrl = trimSlash(env.PUBLIC_BASE_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8899"}`);
   const registryUrl = trimSlash(env.REGISTRY_URL || "");
   const registryTrustAnchorPublicKeyPem = env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM
@@ -53,6 +53,7 @@ export function loadConfig(env = process.env) {
     supabase: loadSupabaseConfig(env, publicBaseUrl, dataDir, gatewayKind),
     nango: loadNangoConfig(env),
     nangoSupabase: loadNangoSupabaseConfig(env),
+    sharepoint: loadSharepointConfig(env),
     kojimem: loadKojimemConfig(env),
     certificateBundle: {
       backend: env.CERTIFICATE_BUNDLE_STORE_BACKEND || "local",
@@ -90,7 +91,7 @@ export function loadConfig(env = process.env) {
         ttlAttribute: env.OAUTH_DYNAMODB_TTL_ATTRIBUTE || "ttl"
       },
       consentPassword: env.OAUTH_CONSENT_PASSWORD || "",
-      consentPasswordHash: env.KOJIMEM_MCP_CONSENT_PASSWORD_SHA256 || env.NANGO_SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || env.SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || env.OAUTH_CONSENT_PASSWORD_SHA256 || "",
+      consentPasswordHash: env.SHAREPOINT_MCP_CONSENT_PASSWORD_SHA256 || env.KOJIMEM_MCP_CONSENT_PASSWORD_SHA256 || env.NANGO_SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || env.SUPABASE_MCP_CONSENT_PASSWORD_SHA256 || env.OAUTH_CONSENT_PASSWORD_SHA256 || "",
       accessTokenTtlMs: Number(env.OAUTH_ACCESS_TOKEN_TTL_SECONDS || 3600) * 1000,
       refreshTokenTtlMs: Number(env.OAUTH_REFRESH_TOKEN_TTL_SECONDS || 7 * 24 * 3600) * 1000,
       codeTtlMs: Number(env.OAUTH_CODE_TTL_SECONDS || 600) * 1000
@@ -218,6 +219,18 @@ function loadNangoSupabaseConfig(env) {
     endUserId: env.NANGO_SUPABASE_END_USER_ID || "attexa-demo-jason",
     endUserEmail: env.NANGO_SUPABASE_END_USER_EMAIL || "jason@amotivv.com",
     organizationId: env.NANGO_SUPABASE_ORGANIZATION_ID || "amotivv-dev"
+  };
+}
+
+function loadSharepointConfig(env) {
+  return {
+    providerConfigKey: env.NANGO_SHAREPOINT_PROVIDER_CONFIG_KEY || "sharepoint-online",
+    connectionId: env.NANGO_SHAREPOINT_CONNECTION_ID || "",
+    defaultSiteId: env.SHAREPOINT_DEFAULT_SITE_ID || "root",
+    maxItems: positiveInt(env.SHAREPOINT_MAX_ITEMS || 50, "SHAREPOINT_MAX_ITEMS"),
+    docMaxChars: positiveInt(env.SHAREPOINT_DOC_MAX_CHARS || 40000, "SHAREPOINT_DOC_MAX_CHARS"),
+    timeoutMs: positiveInt(env.SHAREPOINT_TIMEOUT_MS || 30000, "SHAREPOINT_TIMEOUT_MS"),
+    assurance: env.SHAREPOINT_ASSURANCE || "observed-l1"
   };
 }
 
