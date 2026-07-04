@@ -1,0 +1,42 @@
+# Strata Gmail MCP Gateway — read-only Gmail (Nango → Gmail REST, PER-USER
+# connections resolved by caller subject), observed-l1. Lane 2 of Agent
+# Anything's integration-lanes.md: the generic Nango bridge, Gmail manifest #1.
+# Mirrors fly.sharepoint.toml. Secrets (fly secrets set, NEVER here):
+#   NANGO_SECRET_KEY, OAUTH_CONSENT_PASSWORD, MCP_SESSION_SECRET
+#   (optional) NANGO_GMAIL_CONNECTION_ID — org-level fallback connection
+app = "strata-gmail-mcp"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  GATEWAY_KIND = "gmail"
+  DATA_DIR = "/data/gmail-mcp"
+  PUBLIC_BASE_URL = "https://strata-gmail-mcp.fly.dev"
+  OAUTH_ISSUER = "https://strata-gmail-mcp.fly.dev"
+  OAUTH_STORE_PATH = "/data/gmail-mcp/oauth-store.json"
+  GMAIL_ASSURANCE = "observed-l1"
+  NANGO_GMAIL_INTEGRATION_ID = "google-mail"
+  TENANT_ID = "default"
+  OPERATOR_ID = "operator:amotivv-demo"
+
+[[mounts]]
+  source = "strata_gmail_mcp_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"

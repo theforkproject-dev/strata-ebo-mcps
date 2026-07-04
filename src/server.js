@@ -9,6 +9,8 @@ import { KojimemMcpServer } from "./kojimem-mcp-server.js";
 import { ManagedAgentPolicyGateway } from "./managed-agent-policy-gateway.js";
 import { ResearchMcpServer } from "./research-mcp-server.js";
 import { SharepointMcpServer } from "./sharepoint-mcp-server.js";
+import { GmailMcpServer } from "./gmail-mcp-server.js";
+import { GmailConnect } from "./gmail/connect.js";
 import { errorResponse, isNotification, parseJsonRpc, successResponse, validateRequest } from "./jsonrpc.js";
 import { SessionManager } from "./session.js";
 import { OAuthServer } from "./oauth/server.js";
@@ -19,6 +21,8 @@ import { loadCertificateBundle, loadRecipientVerifications } from "./certificate
 const config = loadConfig();
 const mcp = config.gatewayKind === "research"
   ? new ResearchMcpServer(config)
+  : config.gatewayKind === "gmail"
+  ? new GmailMcpServer(config, { resolveClientName: async (clientId) => (await oauthServerRef()?.store?.getClient?.(clientId))?.client_name || null })
   : config.gatewayKind === "sharepoint"
   ? new SharepointMcpServer(config)
   : config.gatewayKind === "managed-agent-policy"
@@ -30,6 +34,8 @@ const mcp = config.gatewayKind === "research"
     : new EmailMcpServer(config);
 const sessions = new SessionManager({ secret: config.sessionSecret });
 const oauthServer = config.oauth.enabled ? new OAuthServer(config) : null;
+function oauthServerRef() { return oauthServer; } // lazy: the Gmail server is constructed first
+const gmailConnect = config.gatewayKind === "gmail" ? new GmailConnect(config) : null;
 const supabaseConnectorOAuth = config.gatewayKind === "supabase" ? new SupabaseConnectorOAuth(config) : null;
 const nangoSupabaseConnect = config.gatewayKind === "nango-supabase" ? new NangoSupabaseConnect(config) : null;
 
@@ -61,6 +67,13 @@ const server = createServer(async (request, response) => {
             openrouter: Boolean(config.research.openrouterApiKey)
           }
         } : undefined,
+        gmail_connector: config.gatewayKind === "gmail" ? {
+          assurance: config.gmail.assurance,
+          integration: config.gmail.providerConfigKey,
+          nango_configured: Boolean(config.nango.secretKey),
+          per_user_connections: true,
+          fallback_connection_configured: Boolean(config.gmail.fallbackConnectionId)
+        } : undefined,
         sharepoint_connector: config.gatewayKind === "sharepoint" ? {
           assurance: config.sharepoint.assurance,
           provider: config.sharepoint.providerConfigKey,
@@ -89,6 +102,10 @@ const server = createServer(async (request, response) => {
 
     if (nangoSupabaseConnect?.canHandle(request)) {
       return await nangoSupabaseConnect.handle(request, response);
+    }
+
+    if (gmailConnect?.canHandle(request)) {
+      return await gmailConnect.handle(request, response);
     }
 
     if (oauthServer?.canHandle(request)) {
