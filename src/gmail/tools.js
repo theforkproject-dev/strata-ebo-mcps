@@ -9,7 +9,8 @@
  */
 
 import { gmailConfigured, gmailProxy, resolveGmailConnection } from "./client.js";
-export { createUsageMeter } from "../sharepoint/tools.js";
+import { createUsageMeter as createMeter } from "../sharepoint/tools.js";
+export const createUsageMeter = (dataDir) => createMeter(dataDir, "gmail-usage.jsonl");
 
 const TOOL_NAMES = new Set(["gmail_search_messages", "gmail_get_message", "gmail_list_labels", "gmail_gateway_status"]);
 

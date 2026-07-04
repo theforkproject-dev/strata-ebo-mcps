@@ -317,8 +317,8 @@ async function graph(config, { method = "GET", path, query = null, fetchImpl = f
 
 /* ---------------- usage metering ---------------- */
 
-export function createUsageMeter(dataDir) {
-  const filePath = join(dataDir, "sharepoint-usage.jsonl");
+export function createUsageMeter(dataDir, fileName = "sharepoint-usage.jsonl") {
+  const filePath = join(dataDir, fileName);
   let dirReady = false;
   const totals = new Map();
   return {
