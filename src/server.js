@@ -186,7 +186,12 @@ async function handleMcp(request, response) {
     return json(response, 415, { error: "Content-Type must be application/json" });
   }
 
-  const sessionId = auth.sessionId || sessions.createSession({ agentId: request.headers["x-agent-id"] || "mcp-client", tenantId: config.tenant.id });
+  /* Preserve OAuth identity across the session handshake: the first request
+     authenticates with a Bearer token (aid = oauth client_id), and every
+     subsequent request rides the mcp-session-id token — which must CARRY that
+     identity or per-caller resolution (e.g. the Gmail gateway's subject →
+     Nango connection mapping) silently degrades to "mcp-client". */
+  const sessionId = auth.sessionId || sessions.createSession({ agentId: auth.session?.aid || request.headers["x-agent-id"] || "mcp-client", tenantId: config.tenant.id });
   const raw = await readBody(request);
   let parsed;
   try {
