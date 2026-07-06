@@ -164,6 +164,44 @@ export function attioToolDefinitions() {
       },
     },
     {
+      name: "attio_list_meetings",
+      description:
+        "List meetings (calendar-synced or imported calls), newest first by default. Filter by a linked CRM record (linked_object + linked_record_id — e.g. all meetings with a company) or by participant emails. Returns meeting_id, title, times, participants, and linked records — the entry point for finding call recordings and transcripts. Requires the meeting:read scope on the workspace token. Read-only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          linked_object: { type: "string", description: "Optional object slug to filter by linked record (use with linked_record_id)" },
+          linked_record_id: { type: "string", description: "Optional record id the meetings must be linked to" },
+          participants: { type: "string", description: "Optional comma-separated participant emails" },
+          limit: { type: "number", description: "Max meetings (default 25, max 100)" },
+        },
+      },
+    },
+    {
+      name: "attio_list_call_recordings",
+      description:
+        "List the call recordings attached to one meeting (a meeting can have several). Returns call_recording_id values needed for attio_get_call_transcript. Requires the call_recording:read scope. Read-only.",
+      inputSchema: {
+        type: "object",
+        properties: { meeting_id: { type: "string", description: "Meeting id from attio_list_meetings" } },
+        required: ["meeting_id"],
+      },
+    },
+    {
+      name: "attio_get_call_transcript",
+      description:
+        "Read the transcript of one call recording: speaker-attributed text with timestamps, plus a link to the full transcript in Attio. Long transcripts are truncated (the link has the rest). Requires the call_recording:read scope. Read-only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          meeting_id: { type: "string", description: "Meeting id" },
+          call_recording_id: { type: "string", description: "Call recording id from attio_list_call_recordings" },
+          max_chars: { type: "number", description: "Transcript length cap (default 9000, max 20000)" },
+        },
+        required: ["meeting_id", "call_recording_id"],
+      },
+    },
+    {
       name: "attio_gateway_status",
       description:
         "Report the gateway's connection state: whether the workspace access token is configured and which Attio workspace it reaches. Call this first when other attio tools error. Read-only.",
@@ -263,6 +301,57 @@ export async function callAttioTool({ name, args = {}, config }) {
           content: String(n.content_plaintext || "").slice(0, 1500),
           created_at: n.created_at,
         })),
+      };
+    }
+    case "attio_list_meetings": {
+      const limit = Math.max(1, Math.min(100, Number(args.limit) || 25));
+      const query = { limit, sort: "start_desc" };
+      if (args.linked_object && args.linked_record_id) {
+        query.linked_object = String(args.linked_object).trim();
+        query.linked_record_id = String(args.linked_record_id).trim();
+      }
+      if (args.participants) query.participants = String(args.participants).trim();
+      const res = await attioFetch(config, "/meetings", { query });
+      return {
+        ok: true,
+        count: (res.data || []).length,
+        meetings: (res.data || []).map((m) => ({
+          meeting_id: m.id?.meeting_id,
+          title: m.title,
+          start: m.start?.datetime || m.start?.date || null,
+          end: m.end?.datetime || m.end?.date || null,
+          participants: (m.participants || []).map((p) => p.email_address).filter(Boolean),
+          linked_records: (m.linked_records || []).map((r) => ({ object: r.object_slug, record_id: r.record_id })),
+        })),
+      };
+    }
+    case "attio_list_call_recordings": {
+      const meetingId = String(args.meeting_id || "").trim();
+      if (!meetingId) return { ok: false, error: "meeting_id is required" };
+      const res = await attioFetch(config, `/meetings/${encodeURIComponent(meetingId)}/call_recordings`);
+      return {
+        ok: true,
+        count: (res.data || []).length,
+        call_recordings: (res.data || []).map((r) => ({
+          call_recording_id: r.id?.call_recording_id,
+          created_at: r.created_at || null,
+          ...(r.status ? { status: r.status } : {}),
+        })),
+      };
+    }
+    case "attio_get_call_transcript": {
+      const meetingId = String(args.meeting_id || "").trim();
+      const recordingId = String(args.call_recording_id || "").trim();
+      if (!meetingId || !recordingId) return { ok: false, error: "meeting_id and call_recording_id are required" };
+      const maxChars = Math.max(1000, Math.min(20000, Number(args.max_chars) || 9000));
+      const res = await attioFetch(config, `/meetings/${encodeURIComponent(meetingId)}/call_recordings/${encodeURIComponent(recordingId)}/transcript`);
+      const raw = String(res.data?.raw_transcript || "");
+      return {
+        ok: true,
+        truncated: raw.length > maxChars,
+        transcript: raw.slice(0, maxChars),
+        web_url: res.data?.web_url || null,
+        note: raw.length > maxChars ? "Transcript truncated — the web_url opens the full transcript in Attio." : undefined,
       };
     }
     default:
