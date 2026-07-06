@@ -9,6 +9,10 @@ primary_region = "iad"
   PORT = "8080"
   GATEWAY_KIND = "research"
   DATA_DIR = "/data/research-mcp"
+  # Credential longevity (same rationale as gmail/sharepoint): idle credentials
+  # older than the refresh TTL die permanently — 24h access / 90d refresh.
+  OAUTH_ACCESS_TOKEN_TTL_SECONDS = "86400"
+  OAUTH_REFRESH_TOKEN_TTL_SECONDS = "7776000"
   PUBLIC_BASE_URL = "https://strata-research-mcp.fly.dev"
   OAUTH_ISSUER = "https://strata-research-mcp.fly.dev"
   OAUTH_STORE_PATH = "/data/research-mcp/oauth-store.json"
