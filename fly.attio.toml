@@ -1,0 +1,43 @@
+# Strata Attio MCP Gateway — read-only Attio CRM (direct REST, workspace
+# access token; no OAuth broker — the key doesn't expire or refresh),
+# observed-l1. Mirrors fly.sharepoint.toml. Secrets (fly secrets set, NEVER here):
+#   ATTIO_API_KEY, OAUTH_CONSENT_PASSWORD, MCP_SESSION_SECRET
+app = "strata-attio-mcp"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  GATEWAY_KIND = "attio"
+  DATA_DIR = "/data/attio-mcp"
+  # Credential longevity: idle credentials older than the refresh TTL die
+  # permanently — 24h access / 90d refresh, same as the other gateways.
+  OAUTH_ACCESS_TOKEN_TTL_SECONDS = "86400"
+  OAUTH_REFRESH_TOKEN_TTL_SECONDS = "7776000"
+  PUBLIC_BASE_URL = "https://strata-attio-mcp.fly.dev"
+  OAUTH_ISSUER = "https://strata-attio-mcp.fly.dev"
+  OAUTH_STORE_PATH = "/data/attio-mcp/oauth-store.json"
+  ATTIO_ASSURANCE = "observed-l1"
+  TENANT_ID = "default"
+  OPERATOR_ID = "operator:amotivv-demo"
+
+[[mounts]]
+  source = "strata_attio_mcp_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"

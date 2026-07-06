@@ -9,6 +9,7 @@ import { KojimemMcpServer } from "./kojimem-mcp-server.js";
 import { ManagedAgentPolicyGateway } from "./managed-agent-policy-gateway.js";
 import { ResearchMcpServer } from "./research-mcp-server.js";
 import { SharepointMcpServer } from "./sharepoint-mcp-server.js";
+import { AttioMcpServer } from "./attio-mcp-server.js";
 import { GmailMcpServer } from "./gmail-mcp-server.js";
 import { GmailConnect } from "./gmail/connect.js";
 import { errorResponse, isNotification, parseJsonRpc, successResponse, validateRequest } from "./jsonrpc.js";
@@ -25,6 +26,8 @@ const mcp = config.gatewayKind === "research"
   ? new GmailMcpServer(config, { resolveClientName: async (clientId) => (await oauthServerRef()?.store?.getClient?.(clientId))?.client_name || null })
   : config.gatewayKind === "sharepoint"
   ? new SharepointMcpServer(config)
+  : config.gatewayKind === "attio"
+  ? new AttioMcpServer(config)
   : config.gatewayKind === "managed-agent-policy"
   ? new ManagedAgentPolicyGateway(config)
   : config.gatewayKind === "kojimem"
