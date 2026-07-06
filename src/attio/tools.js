@@ -177,13 +177,14 @@ export function attioToolDefinitions() {
     {
       name: "attio_list_meetings",
       description:
-        "List meetings (calendar-synced or imported calls), newest first by default. Filter by a linked CRM record (linked_object + linked_record_id — e.g. all meetings with a company) or by participant emails. Returns meeting_id, title, times, participants, and linked records — the entry point for finding call recordings and transcripts. Requires the meeting:read scope on the workspace token. Read-only.",
+        "List meetings, newest first — DEFAULTS TO MEETINGS THAT ALREADY HAPPENED (recorded calls live in the past; calendar-synced future meetings would otherwise bury them). Pass include_upcoming:true for future/calendar queries. Filter by a linked CRM record (linked_object + linked_record_id — e.g. all meetings with a company) or by participant emails. Returns meeting_id, title, times, participants, linked records, and whether each has call recordings is one call away (attio_list_call_recordings). Requires the meeting:read scope. Read-only.",
       inputSchema: {
         type: "object",
         properties: {
           linked_object: { type: "string", description: "Optional object slug to filter by linked record (use with linked_record_id)" },
           linked_record_id: { type: "string", description: "Optional record id the meetings must be linked to" },
           participants: { type: "string", description: "Optional comma-separated participant emails" },
+          include_upcoming: { type: "boolean", description: "Include future meetings (default false — past only)" },
           limit: { type: "number", description: "Max meetings (default 25, max 100)" },
         },
       },
@@ -201,13 +202,13 @@ export function attioToolDefinitions() {
     {
       name: "attio_get_call_transcript",
       description:
-        "Read the transcript of one call recording: speaker-attributed text with timestamps, plus a link to the full transcript in Attio. Long transcripts are truncated (the link has the rest). Requires the call_recording:read scope. Read-only.",
+        "Read the transcript of one call recording: speaker-attributed, timestamped turns assembled from the full paginated segment stream. Only recordings with status completed have transcripts. The result reports truncated honestly — NEVER summarize a truncated transcript as if complete; raise max_chars or say it is partial. Attio exposes no ready-made summaries via API: summaries are something you produce from the complete transcript. Requires the call_recording:read scope. Read-only.",
       inputSchema: {
         type: "object",
         properties: {
           meeting_id: { type: "string", description: "Meeting id" },
           call_recording_id: { type: "string", description: "Call recording id from attio_list_call_recordings" },
-          max_chars: { type: "number", description: "Transcript length cap (default 9000, max 20000)" },
+          max_chars: { type: "number", description: "Transcript length cap (default 16000, max 60000 — a 15-minute call is roughly 15000; raise this before summarizing long calls)" },
         },
         required: ["meeting_id", "call_recording_id"],
       },
@@ -333,6 +334,10 @@ export async function callAttioTool({ name, args = {}, config }) {
     case "attio_list_meetings": {
       const limit = Math.max(1, Math.min(100, Number(args.limit) || 25));
       const query = { limit, sort: "start_desc" };
+      /* Past-only by default: recorded calls are the common ask, and future
+         calendar entries (which can never have recordings) otherwise bury
+         them — a live diagnosis miss taught us this. */
+      if (!args.include_upcoming) query.starts_before = new Date().toISOString();
       if (args.linked_object && args.linked_record_id) {
         query.linked_object = String(args.linked_object).trim();
         query.linked_record_id = String(args.linked_record_id).trim();
@@ -364,21 +369,64 @@ export async function callAttioTool({ name, args = {}, config }) {
           created_at: r.created_at || null,
           ...(r.status ? { status: r.status } : {}),
         })),
+        note: (res.data || []).length ? "Some recordings have no transcript (never processed) — attio_get_call_transcript reports that honestly; try another recording or the web link." : undefined,
       };
     }
     case "attio_get_call_transcript": {
       const meetingId = String(args.meeting_id || "").trim();
       const recordingId = String(args.call_recording_id || "").trim();
       if (!meetingId || !recordingId) return { ok: false, error: "meeting_id and call_recording_id are required" };
-      const maxChars = Math.max(1000, Math.min(20000, Number(args.max_chars) || 9000));
-      const res = await attioFetch(config, `/meetings/${encodeURIComponent(meetingId)}/call_recordings/${encodeURIComponent(recordingId)}/transcript`);
-      const raw = String(res.data?.raw_transcript || "");
+      const maxChars = Math.max(1000, Math.min(60000, Number(args.max_chars) || 16000));
+      /* The API paginates transcript segments (and raw_transcript covers only
+         the returned page) — walk the cursor and assemble until max_chars. */
+      const stamp = (sec) => {
+        const s = Math.max(0, Math.round(Number(sec) || 0));
+        return `[${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}]`;
+      };
+      let text = "";
+      let cursor = null;
+      let webUrl = null;
+      let pages = 0;
+      let exhausted = false;
+      while (pages < 40 && text.length < maxChars) {
+        const res = await attioFetch(config, `/meetings/${encodeURIComponent(meetingId)}/call_recordings/${encodeURIComponent(recordingId)}/transcript`, {
+          query: cursor ? { cursor } : {},
+        });
+        pages += 1;
+        webUrl = res.data?.web_url || webUrl;
+        const raw = String(res.data?.raw_transcript || "");
+        if (raw) {
+          text += (text ? "\n" : "") + raw;
+        } else {
+          /* Fall back to assembling from segments, merging consecutive
+             same-speaker segments into lines. */
+          let lastSpeaker = null;
+          for (const seg of res.data?.transcript || []) {
+            const speaker = seg.speaker?.name || "Speaker";
+            if (speaker !== lastSpeaker) {
+              text += `${text ? "\n" : ""}${stamp(seg.start_time)} ${speaker}: ${seg.speech}`;
+              lastSpeaker = speaker;
+            } else {
+              text += ` ${seg.speech}`;
+            }
+          }
+        }
+        cursor = res.pagination?.next_cursor || null;
+        if (!cursor) {
+          exhausted = true;
+          break;
+        }
+      }
+      if (!text) {
+        return { ok: true, transcript: "", empty: true, web_url: webUrl, note: "This recording has no transcript (it may never have been processed). Try another recording on the meeting, or the web link." };
+      }
+      const truncated = text.length > maxChars || !exhausted;
       return {
         ok: true,
-        truncated: raw.length > maxChars,
-        transcript: raw.slice(0, maxChars),
-        web_url: res.data?.web_url || null,
-        note: raw.length > maxChars ? "Transcript truncated — the web_url opens the full transcript in Attio." : undefined,
+        truncated,
+        transcript: text.slice(0, maxChars),
+        web_url: webUrl,
+        note: truncated ? "Transcript truncated — raise max_chars (up to 20000) or open the web_url for the full call." : undefined,
       };
     }
     default:
