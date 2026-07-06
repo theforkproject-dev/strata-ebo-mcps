@@ -151,6 +151,17 @@ export function attioToolDefinitions() {
       },
     },
     {
+      name: "attio_list_notes",
+      description:
+        "List the workspace's most recent notes across ALL records, newest first — titles, parent record, and a content preview. Meeting and call summaries written by people or notetaker tools usually live here as notes (Attio's native call-recording transcripts are separate and only exist for calls recorded in Attio). Use this for 'what calls/updates happened recently?'; use attio_record_notes for one record's notes. Read-only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          limit: { type: "number", description: "Max notes (default 10, max 25)" },
+        },
+      },
+    },
+    {
       name: "attio_record_notes",
       description: "Read the notes attached to one CRM record (title + plaintext content, newest first). Read-only.",
       inputSchema: {
@@ -283,6 +294,22 @@ export async function callAttioTool({ name, args = {}, config }) {
           parent_object: e.parent_object,
           created_at: e.created_at,
           entry_values: JSON.parse(JSON.stringify(e.entry_values || {}).slice(0, 1200)),
+        })),
+      };
+    }
+    case "attio_list_notes": {
+      const limit = Math.max(1, Math.min(25, Number(args.limit) || 10));
+      const res = await attioFetch(config, "/notes", { query: { limit } });
+      return {
+        ok: true,
+        count: (res.data || []).length,
+        notes: (res.data || []).map((n) => ({
+          note_id: n.id?.note_id,
+          title: n.title,
+          parent_object: n.parent_object,
+          parent_record_id: n.parent_record_id,
+          preview: String(n.content_plaintext || "").slice(0, 240),
+          created_at: n.created_at,
         })),
       };
     }

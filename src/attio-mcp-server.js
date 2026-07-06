@@ -52,7 +52,7 @@ export class AttioMcpServer {
         version: "0.1.0"
       },
       instructions:
-        "Read-only Attio CRM tools. Start with attio_list_objects to learn the workspace's object slugs, then attio_search_records (name contains-match) and attio_get_record for depth; attio_list_lists / attio_list_entries for pipelines; attio_record_notes for a record's notes. Call attio_gateway_status if tools report configuration errors. All calls are metered per client and witnessed by the calling platform.",
+        "Read-only Attio CRM tools. Start with attio_list_objects to learn the workspace's object slugs, then attio_search_records (name contains-match) and attio_get_record for depth; attio_list_lists / attio_list_entries for pipelines. NOTES vs RECORDINGS: meeting/call summaries usually live as NOTES (attio_record_notes for one record, attio_list_notes for recent across the workspace); the attio_list_meetings -> attio_list_call_recordings -> attio_get_call_transcript chain only has content for calls RECORDED IN Attio — when it comes back empty, check notes before concluding nothing exists. Call attio_gateway_status if tools report configuration errors. All calls are metered per client and witnessed by the calling platform.",
       _meta: {
         session_id: requestContext.session?.sid,
         assurance: this.config.attio.assurance
