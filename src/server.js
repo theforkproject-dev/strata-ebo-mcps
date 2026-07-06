@@ -10,6 +10,8 @@ import { ManagedAgentPolicyGateway } from "./managed-agent-policy-gateway.js";
 import { ResearchMcpServer } from "./research-mcp-server.js";
 import { SharepointMcpServer } from "./sharepoint-mcp-server.js";
 import { AttioMcpServer } from "./attio-mcp-server.js";
+import { GdriveMcpServer } from "./gdrive-mcp-server.js";
+import { GdriveConnect } from "./gdrive/connect.js";
 import { GmailMcpServer } from "./gmail-mcp-server.js";
 import { GmailConnect } from "./gmail/connect.js";
 import { errorResponse, isNotification, parseJsonRpc, successResponse, validateRequest } from "./jsonrpc.js";
@@ -24,6 +26,8 @@ const mcp = config.gatewayKind === "research"
   ? new ResearchMcpServer(config)
   : config.gatewayKind === "gmail"
   ? new GmailMcpServer(config, { resolveClientName: async (clientId) => (await oauthServerRef()?.store?.getClient?.(clientId))?.client_name || null })
+  : config.gatewayKind === "gdrive"
+  ? new GdriveMcpServer(config, { resolveClientName: async (clientId) => (await oauthServerRef()?.store?.getClient?.(clientId))?.client_name || null })
   : config.gatewayKind === "sharepoint"
   ? new SharepointMcpServer(config)
   : config.gatewayKind === "attio"
@@ -39,6 +43,7 @@ const sessions = new SessionManager({ secret: config.sessionSecret });
 const oauthServer = config.oauth.enabled ? new OAuthServer(config) : null;
 function oauthServerRef() { return oauthServer; } // lazy: the Gmail server is constructed first
 const gmailConnect = config.gatewayKind === "gmail" ? new GmailConnect(config) : null;
+const gdriveConnect = config.gatewayKind === "gdrive" ? new GdriveConnect(config) : null;
 const supabaseConnectorOAuth = config.gatewayKind === "supabase" ? new SupabaseConnectorOAuth(config) : null;
 const nangoSupabaseConnect = config.gatewayKind === "nango-supabase" ? new NangoSupabaseConnect(config) : null;
 
@@ -77,6 +82,13 @@ const server = createServer(async (request, response) => {
           per_user_connections: true,
           fallback_connection_configured: Boolean(config.gmail.fallbackConnectionId)
         } : undefined,
+        gdrive_connector: config.gatewayKind === "gdrive" ? {
+          assurance: config.gdrive.assurance,
+          integration: config.gdrive.providerConfigKey,
+          nango_configured: Boolean(config.nango.secretKey),
+          per_user_connections: true,
+          fallback_connection_configured: Boolean(config.gdrive.fallbackConnectionId)
+        } : undefined,
         sharepoint_connector: config.gatewayKind === "sharepoint" ? {
           assurance: config.sharepoint.assurance,
           provider: config.sharepoint.providerConfigKey,
@@ -109,6 +121,9 @@ const server = createServer(async (request, response) => {
 
     if (gmailConnect?.canHandle(request)) {
       return await gmailConnect.handle(request, response);
+    }
+    if (gdriveConnect?.canHandle(request)) {
+      return await gdriveConnect.handle(request, response);
     }
 
     if (oauthServer?.canHandle(request)) {

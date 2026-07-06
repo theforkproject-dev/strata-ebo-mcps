@@ -7,7 +7,7 @@ export function loadConfig(env = process.env) {
 
   const gatewayKind = String(env.STRATA_GATEWAY_KIND || env.GATEWAY_KIND || env.MCP_GATEWAY_KIND || "email").toLowerCase();
   const sessionSecret = env.MCP_SESSION_SECRET || randomBytes(32).toString("hex");
-  const dataDir = env.DATA_DIR || (gatewayKind === "research" ? "artifacts/research-mcp" : gatewayKind === "managed-agent-policy" ? "artifacts/managed-agent-policy-gateway" : gatewayKind === "kojimem" ? "artifacts/kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "artifacts/nango-supabase-mcp" : gatewayKind === "supabase" ? "artifacts/supabase-mcp" : gatewayKind === "sharepoint" ? "artifacts/sharepoint-mcp" : gatewayKind === "attio" ? "artifacts/attio-mcp" : gatewayKind === "gmail" ? "artifacts/gmail-mcp" : "artifacts/email-mcp");
+  const dataDir = env.DATA_DIR || (gatewayKind === "research" ? "artifacts/research-mcp" : gatewayKind === "managed-agent-policy" ? "artifacts/managed-agent-policy-gateway" : gatewayKind === "kojimem" ? "artifacts/kojimem-agent-handoff" : gatewayKind === "nango-supabase" ? "artifacts/nango-supabase-mcp" : gatewayKind === "supabase" ? "artifacts/supabase-mcp" : gatewayKind === "sharepoint" ? "artifacts/sharepoint-mcp" : gatewayKind === "attio" ? "artifacts/attio-mcp" : gatewayKind === "gdrive" ? "artifacts/gdrive-mcp" : gatewayKind === "gmail" ? "artifacts/gmail-mcp" : "artifacts/email-mcp");
   const publicBaseUrl = trimSlash(env.PUBLIC_BASE_URL || `http://${env.HOST || "127.0.0.1"}:${env.PORT || "8899"}`);
   const registryUrl = trimSlash(env.REGISTRY_URL || "");
   const registryTrustAnchorPublicKeyPem = env.REGISTRY_TRUST_ANCHOR_PUBLIC_KEY_PEM
@@ -60,6 +60,7 @@ export function loadConfig(env = process.env) {
       assurance: env.ATTIO_ASSURANCE || "observed-l1",
     },
     gmail: loadGmailConfig(env),
+    gdrive: loadGdriveConfig(env),
     kojimem: loadKojimemConfig(env),
     certificateBundle: {
       backend: env.CERTIFICATE_BUNDLE_STORE_BACKEND || "local",
@@ -237,6 +238,16 @@ function loadSharepointConfig(env) {
     docMaxChars: positiveInt(env.SHAREPOINT_DOC_MAX_CHARS || 40000, "SHAREPOINT_DOC_MAX_CHARS"),
     timeoutMs: positiveInt(env.SHAREPOINT_TIMEOUT_MS || 30000, "SHAREPOINT_TIMEOUT_MS"),
     assurance: env.SHAREPOINT_ASSURANCE || "observed-l1"
+  };
+}
+
+function loadGdriveConfig(env) {
+  return {
+    providerConfigKey: env.NANGO_GDRIVE_INTEGRATION_ID || env.NANGO_GDRIVE_PROVIDER_CONFIG_KEY || "google-drive",
+    fallbackConnectionId: env.NANGO_GDRIVE_CONNECTION_ID || "",
+    maxResults: positiveInt(env.GDRIVE_MAX_RESULTS || 25, "GDRIVE_MAX_RESULTS"),
+    timeoutMs: positiveInt(env.GDRIVE_TIMEOUT_MS || 30000, "GDRIVE_TIMEOUT_MS"),
+    assurance: env.GDRIVE_ASSURANCE || "observed-l1"
   };
 }
 

@@ -1,0 +1,48 @@
+# Strata Gmail MCP Gateway — read-only Google Drive (Nango → Gmail REST, PER-USER
+# connections resolved by caller subject), observed-l1. Lane 2 of Agent
+# Anything's integration-lanes.md: the generic Nango bridge, Google Drive manifest #4.
+# Mirrors fly.sharepoint.toml. Secrets (fly secrets set, NEVER here):
+#   NANGO_SECRET_KEY, OAUTH_CONSENT_PASSWORD, MCP_SESSION_SECRET
+#   (optional) NANGO_GDRIVE_CONNECTION_ID — org-level fallback connection
+app = "strata-gdrive-mcp"
+primary_region = "ewr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  GATEWAY_KIND = "gdrive"
+  DATA_DIR = "/data/gdrive-mcp"
+  # Credential longevity: platform vaults auto-refresh mcp_oauth tokens, but an
+  # idle credential older than the REFRESH TTL dies permanently (invalidated,
+  # retries exhausted) — the SharePoint org credential died exactly this way
+  # after 8 idle days on the 7d default. 24h access / 90d refresh.
+  OAUTH_ACCESS_TOKEN_TTL_SECONDS = "86400"
+  OAUTH_REFRESH_TOKEN_TTL_SECONDS = "7776000"
+  PUBLIC_BASE_URL = "https://strata-gdrive-mcp.fly.dev"
+  OAUTH_ISSUER = "https://strata-gdrive-mcp.fly.dev"
+  OAUTH_STORE_PATH = "/data/gdrive-mcp/oauth-store.json"
+  GDRIVE_ASSURANCE = "observed-l1"
+  NANGO_GDRIVE_INTEGRATION_ID = "google-drive"
+  TENANT_ID = "default"
+  OPERATOR_ID = "operator:amotivv-demo"
+
+[[mounts]]
+  source = "strata_gdrive_mcp_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
