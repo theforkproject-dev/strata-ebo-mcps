@@ -202,13 +202,14 @@ export function attioToolDefinitions() {
     {
       name: "attio_get_call_transcript",
       description:
-        "Read the transcript of one call recording: speaker-attributed, timestamped turns assembled from the full paginated segment stream. Only recordings with status completed have transcripts. The result reports truncated honestly — NEVER summarize a truncated transcript as if complete; raise max_chars or say it is partial. Attio exposes no ready-made summaries via API: summaries are something you produce from the complete transcript. Requires the call_recording:read scope. Read-only.",
+        "Read the transcript of one call recording as speaker-attributed, timestamped turns — sliced, with paging. Each call returns one slice plus total_chars, complete, and next_start_char. PROTOCOL for calls longer than one slice: keep calling with start_char = next_start_char until complete=true, accumulating or summarizing incrementally as you go. NEVER present a summary before you have walked to complete=true — if you stop early, say plainly which part you read. Only recordings with status completed have transcripts. Attio exposes no ready-made summaries via API: a summary is something you produce from the complete transcript. Requires the call_recording:read scope. Read-only.",
       inputSchema: {
         type: "object",
         properties: {
           meeting_id: { type: "string", description: "Meeting id" },
           call_recording_id: { type: "string", description: "Call recording id from attio_list_call_recordings" },
-          max_chars: { type: "number", description: "Transcript length cap (default 16000, max 60000 — a 15-minute call is roughly 15000; raise this before summarizing long calls)" },
+          start_char: { type: "number", description: "Slice start offset (default 0). For the next slice, pass the previous response's next_start_char." },
+          max_chars: { type: "number", description: "Slice size (default 40000, max 60000). ~40000 chars is roughly 35-40 minutes of conversation." },
         },
         required: ["meeting_id", "call_recording_id"],
       },
@@ -376,9 +377,17 @@ export async function callAttioTool({ name, args = {}, config }) {
       const meetingId = String(args.meeting_id || "").trim();
       const recordingId = String(args.call_recording_id || "").trim();
       if (!meetingId || !recordingId) return { ok: false, error: "meeting_id and call_recording_id are required" };
-      const maxChars = Math.max(1000, Math.min(60000, Number(args.max_chars) || 16000));
+      const maxChars = Math.max(1000, Math.min(60000, Number(args.max_chars) || 40000));
+      const startChar = Math.max(0, Number(args.start_char) || 0);
       /* The API paginates transcript segments (and raw_transcript covers only
-         the returned page) — walk the cursor and assemble until max_chars. */
+         the returned page). Walk EVERY page and stitch the whole call in
+         memory (a multi-hour call is a few hundred KB — trivial), then return
+         the requested slice with honest coordinates: total_chars, complete,
+         next_start_char. Walking to the end is what lets the tool tell the
+         truth about how much call exists — the old stop-at-cap walker could
+         only say "there's more", never "how much more" (field complaint:
+         60-minute calls truncating mid-sentence at ~52 minutes with no way
+         to read the rest). */
       const stamp = (sec) => {
         const s = Math.max(0, Math.round(Number(sec) || 0));
         return `[${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}]`;
@@ -388,7 +397,7 @@ export async function callAttioTool({ name, args = {}, config }) {
       let webUrl = null;
       let pages = 0;
       let exhausted = false;
-      while (pages < 40 && text.length < maxChars) {
+      while (pages < 120) {
         const res = await attioFetch(config, `/meetings/${encodeURIComponent(meetingId)}/call_recordings/${encodeURIComponent(recordingId)}/transcript`, {
           query: cursor ? { cursor } : {},
         });
@@ -420,13 +429,24 @@ export async function callAttioTool({ name, args = {}, config }) {
       if (!text) {
         return { ok: true, transcript: "", empty: true, web_url: webUrl, note: "This recording has no transcript (it may never have been processed). Try another recording on the meeting, or the web link." };
       }
-      const truncated = text.length > maxChars || !exhausted;
+      const slice = text.slice(startChar, startChar + maxChars);
+      const endChar = startChar + slice.length;
+      const complete = exhausted && endChar >= text.length;
       return {
         ok: true,
-        truncated,
-        transcript: text.slice(0, maxChars),
+        transcript: slice,
+        start_char: startChar,
+        end_char: endChar,
+        total_chars: exhausted ? text.length : null,
+        complete,
+        next_start_char: complete ? null : endChar,
+        truncated: !complete,
         web_url: webUrl,
-        note: truncated ? "Transcript truncated — raise max_chars (up to 20000) or open the web_url for the full call." : undefined,
+        note: complete
+          ? undefined
+          : exhausted
+            ? `Slice ${startChar}-${endChar} of ${text.length} total chars. Call again with start_char=${endChar} to continue; summarize only after complete=true.`
+            : "Transcript walk hit the page guard before the recording ended (extremely long call) — continue with start_char, and treat total_chars as unknown.",
       };
     }
     default:
