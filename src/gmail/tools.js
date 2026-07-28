@@ -68,7 +68,7 @@ export async function callGmailTool({ name, args = {}, config, subject }) {
   if (!connectionId) {
     return {
       ok: false,
-      error: `No Gmail connection for this user (${subject}). Connect Gmail from the workspace Connectors screen, then retry.`,
+      error: `No usable Gmail connection for this user (${subject}). Connect or reconnect Gmail from the workspace Connectors screen, then retry.`,
       connect_hint: `${config.publicBaseUrl}/connectors/nango/gmail/status?end_user_id=${encodeURIComponent(subject)}`
     };
   }

@@ -26,7 +26,8 @@ function nangoHeaders(config) {
 /**
  * Resolve the caller's Drive connection: exact end_user.id match on the
  * google-drive integration, tiny TTL cache, env fallback for an org-level
- * demo connection. Returns null when the subject has never connected.
+ * demo connection. Returns null when the subject has never connected or its
+ * exact connection has a terminal authentication error.
  */
 export async function resolveGdriveConnection(config, subject, { fetchImpl = fetch } = {}) {
   const key = String(subject || "").trim() || "unknown";
@@ -42,7 +43,13 @@ export async function resolveGdriveConnection(config, subject, { fetchImpl = fet
     (connection) => connection.provider_config_key === config.gdrive.providerConfigKey
   );
   const match = connections.find((connection) => connection.end_user?.id === key);
-  const connectionId = match?.connection_id || config.gdrive.fallbackConnectionId || null;
+  /* Nango retains broken connection rows after refresh credentials become
+     terminally invalid. Fail closed, and never fall through to an org demo
+     connection when an exact user's connection exists but is broken. */
+  const authFailed = match?.errors?.some((error) => error?.type === "auth");
+  const connectionId = match
+    ? (authFailed ? null : match.connection_id)
+    : config.gdrive.fallbackConnectionId || null;
   if (connectionId) connectionCache.set(key, { connectionId, at: Date.now() });
   return connectionId;
 }

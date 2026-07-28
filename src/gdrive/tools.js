@@ -98,7 +98,7 @@ export async function callGdriveTool({ name, args = {}, config, subject }) {
   if (!connectionId) {
     return {
       ok: false,
-      error: `No Google Drive connection for this user (${subject}). Connect Google Drive from the workspace Connectors screen, then retry.`,
+      error: `No usable Google Drive connection for this user (${subject}). Connect or reconnect Google Drive from the workspace Connectors screen, then retry.`,
       connect_hint: `${config.publicBaseUrl}/connectors/nango/gdrive/status?end_user_id=${encodeURIComponent(subject)}`
     };
   }
