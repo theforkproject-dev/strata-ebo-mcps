@@ -26,13 +26,11 @@ function nangoHeaders(config) {
 /**
  * Resolve the caller's Drive connection: exact end_user.id match on the
  * google-drive integration, tiny TTL cache, env fallback for an org-level
- * demo connection. Returns null when the subject has never connected.
+ * demo connection. Returns null when the subject has never connected or its
+ * exact connection has a terminal authentication error.
  */
-export async function resolveGdriveConnection(config, subject, { fetchImpl = fetch } = {}) {
+export async function getGdriveConnectionState(config, subject, { fetchImpl = fetch } = {}) {
   const key = String(subject || "").trim() || "unknown";
-  const cached = connectionCache.get(key);
-  if (cached && Date.now() - cached.at < CONNECTION_CACHE_TTL_MS) return cached.connectionId;
-
   /* No server-side filter — Nango's list endpoint 400s on the param in this
      environment; filter client-side by integration + exact end_user id. */
   const response = await fetchImpl(`${config.nango.serverUrl}/connection`, { headers: nangoHeaders(config) });
@@ -42,24 +40,45 @@ export async function resolveGdriveConnection(config, subject, { fetchImpl = fet
     (connection) => connection.provider_config_key === config.gdrive.providerConfigKey
   );
   const match = connections.find((connection) => connection.end_user?.id === key);
-  const connectionId = match?.connection_id || config.gdrive.fallbackConnectionId || null;
+  /* Nango retains broken connection rows after refresh credentials become
+     terminally invalid. Fail closed, and never fall through to an org demo
+     connection when an exact user's connection exists but is broken. */
+  const authFailed = match?.errors?.some((error) => error?.type === "auth");
+  const connectionId = match
+    ? (authFailed ? null : match.connection_id)
+    : config.gdrive.fallbackConnectionId || null;
+  return {
+    status: authFailed ? "reconnect_required" : connectionId ? "ready" : "connection_required",
+    connectionId,
+    existingConnectionId: match?.connection_id || null
+  };
+}
+
+export async function resolveGdriveConnection(config, subject, { fetchImpl = fetch } = {}) {
+  const key = String(subject || "").trim() || "unknown";
+  const cached = connectionCache.get(key);
+  if (cached && Date.now() - cached.at < CONNECTION_CACHE_TTL_MS) return cached.connectionId;
+  const { connectionId } = await getGdriveConnectionState(config, key, { fetchImpl });
   if (connectionId) connectionCache.set(key, { connectionId, at: Date.now() });
   return connectionId;
 }
 
 /** Create a Nango connect session and return the hosted-auth link. */
-export async function createGdriveConnectSession(config, { endUserId, email = "", displayName = "" }, { fetchImpl = fetch } = {}) {
-  const response = await fetchImpl(`${config.nango.serverUrl}/connect/sessions`, {
+export async function createGdriveConnectSession(config, { endUserId, email = "", displayName = "", connectionId = null }, { fetchImpl = fetch } = {}) {
+  const reconnect = Boolean(connectionId);
+  const response = await fetchImpl(`${config.nango.serverUrl}/connect/sessions${reconnect ? "/reconnect" : ""}`, {
     method: "POST",
     headers: nangoHeaders(config),
-    body: JSON.stringify({
-      end_user: {
-        id: endUserId,
-        ...(email ? { email } : {}),
-        ...(displayName ? { display_name: displayName } : {})
-      },
-      allowed_integrations: [config.gdrive.providerConfigKey]
-    })
+    body: JSON.stringify(reconnect
+      ? { connection_id: connectionId, integration_id: config.gdrive.providerConfigKey }
+      : {
+          end_user: {
+            id: endUserId,
+            ...(email ? { email } : {}),
+            ...(displayName ? { display_name: displayName } : {})
+          },
+          allowed_integrations: [config.gdrive.providerConfigKey]
+        })
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {

@@ -8,7 +8,7 @@
  * observed-l1 on conventional infrastructure (agent-side witnessing).
  */
 
-import { gmailConfigured, gmailProxy, resolveGmailConnection } from "./client.js";
+import { gmailConfigured, gmailProxy, getGmailConnectionState, resolveGmailConnection } from "./client.js";
 import { createUsageMeter as createMeter } from "../sharepoint/tools.js";
 export const createUsageMeter = (dataDir) => createMeter(dataDir, "gmail-usage.jsonl");
 
@@ -68,7 +68,7 @@ export async function callGmailTool({ name, args = {}, config, subject }) {
   if (!connectionId) {
     return {
       ok: false,
-      error: `No Gmail connection for this user (${subject}). Connect Gmail from the workspace Connectors screen, then retry.`,
+      error: `No usable Gmail connection for this user (${subject}). Connect or reconnect Gmail from the workspace Connectors screen, then retry.`,
       connect_hint: `${config.publicBaseUrl}/connectors/nango/gmail/status?end_user_id=${encodeURIComponent(subject)}`
     };
   }
@@ -85,22 +85,22 @@ export async function callGmailTool({ name, args = {}, config, subject }) {
 }
 
 async function gatewayStatus(config, subject) {
-  let connectionId = null;
+  let state = { status: "connection_required", connectionId: null };
   let resolveError = null;
   if (gmailConfigured(config)) {
     try {
-      connectionId = await resolveGmailConnection(config, subject);
+      state = await getGmailConnectionState(config, subject);
     } catch (error) {
       resolveError = error.message;
     }
   }
   return {
     ok: true,
-    status: gmailConfigured(config) ? (connectionId ? "ready" : "connection_required") : "not_configured",
+    status: gmailConfigured(config) ? state.status : "not_configured",
     nango_configured: Boolean(config.nango.secretKey),
     integration: config.gmail.providerConfigKey,
     subject,
-    user_connected: Boolean(connectionId),
+    user_connected: Boolean(state.connectionId),
     assurance: config.gmail.assurance,
     sensitivity: "read-only",
     ...(resolveError ? { resolve_error: resolveError } : {})

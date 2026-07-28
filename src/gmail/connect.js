@@ -5,7 +5,7 @@
  * reports whether a connection exists for that subject. The Nango secret never
  * leaves this gateway; the consent screen shows the workspace's own Google app.
  */
-import { createGmailConnectSession, resolveGmailConnection } from "./client.js";
+import { createGmailConnectSession, getGmailConnectionState } from "./client.js";
 
 export class GmailConnect {
   constructor(config) {
@@ -32,10 +32,12 @@ export class GmailConnect {
     const endUserId = url.searchParams.get("end_user_id");
     if (!endUserId) return json(response, 400, { error: "end_user_id is required" });
     try {
+      const state = await getGmailConnectionState(this.config, endUserId);
       const session = await createGmailConnectSession(this.config, {
         endUserId,
         email: url.searchParams.get("email") || "",
-        displayName: url.searchParams.get("display_name") || ""
+        displayName: url.searchParams.get("display_name") || "",
+        connectionId: state.existingConnectionId
       });
       if (!session.connectLink) return json(response, 502, { error: "Nango did not return a connect link" });
       response.writeHead(302, { location: session.connectLink, "cache-control": "no-store" });
@@ -48,14 +50,14 @@ export class GmailConnect {
   async status(url, response) {
     const endUserId = url.searchParams.get("end_user_id");
     if (!endUserId) return json(response, 400, { error: "end_user_id is required" });
-    let connectionId = null;
+    let state;
     try {
-      connectionId = await resolveGmailConnection(this.config, endUserId);
+      state = await getGmailConnectionState(this.config, endUserId);
     } catch (error) {
       return json(response, 502, { error: error.message });
     }
     return json(response, 200, {
-      status: connectionId ? "ready" : "connection_required",
+      status: state.status,
       integration: this.config.gmail.providerConfigKey,
       end_user_id: endUserId,
       connect_url: `${this.config.publicBaseUrl}/connectors/nango/gmail/start?${new URLSearchParams({ end_user_id: endUserId })}`

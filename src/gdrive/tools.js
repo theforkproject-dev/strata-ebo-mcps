@@ -13,7 +13,7 @@
  * read as if it were the whole file.
  */
 import { createUsageMeter as createMeter } from "../sharepoint/tools.js";
-import { gdriveConfigured, gdriveProxy, resolveGdriveConnection } from "./client.js";
+import { gdriveConfigured, gdriveProxy, getGdriveConnectionState, resolveGdriveConnection } from "./client.js";
 
 export const createUsageMeter = (dataDir) => createMeter(dataDir, "gdrive-usage.jsonl");
 
@@ -98,7 +98,7 @@ export async function callGdriveTool({ name, args = {}, config, subject }) {
   if (!connectionId) {
     return {
       ok: false,
-      error: `No Google Drive connection for this user (${subject}). Connect Google Drive from the workspace Connectors screen, then retry.`,
+      error: `No usable Google Drive connection for this user (${subject}). Connect or reconnect Google Drive from the workspace Connectors screen, then retry.`,
       connect_hint: `${config.publicBaseUrl}/connectors/nango/gdrive/status?end_user_id=${encodeURIComponent(subject)}`
     };
   }
@@ -118,14 +118,14 @@ async function gatewayStatus(config, subject) {
   if (!gdriveConfigured(config)) {
     return { ok: true, status: "not_configured", nango_configured: false, subject, sensitivity: "read-only" };
   }
-  const connectionId = await resolveGdriveConnection(config, subject).catch(() => null);
+  const state = await getGdriveConnectionState(config, subject).catch(() => ({ status: "connection_required", connectionId: null }));
   return {
     ok: true,
-    status: connectionId ? "ready" : "connection_required",
+    status: state.status,
     nango_configured: true,
     integration: config.gdrive.providerConfigKey,
     subject,
-    user_connected: Boolean(connectionId),
+    user_connected: Boolean(state.connectionId),
     assurance: config.gdrive.assurance,
     sensitivity: "read-only"
   };
