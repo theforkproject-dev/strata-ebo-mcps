@@ -28,11 +28,8 @@ function nangoHeaders(config) {
  * connection. Returns null when the subject has never connected or its exact
  * connection has a terminal authentication error.
  */
-export async function resolveGmailConnection(config, subject, { fetchImpl = fetch } = {}) {
+export async function getGmailConnectionState(config, subject, { fetchImpl = fetch } = {}) {
   const key = String(subject || "").trim() || "unknown";
-  const cached = connectionCache.get(key);
-  if (cached && Date.now() - cached.at < CONNECTION_CACHE_TTL_MS) return cached.connectionId;
-
   /* No server-side filter — Nango's list endpoint 400s on the param in this
      environment; filter client-side by integration + exact end_user id. */
   const response = await fetchImpl(`${config.nango.serverUrl}/connection`, { headers: nangoHeaders(config) });
@@ -49,23 +46,38 @@ export async function resolveGmailConnection(config, subject, { fetchImpl = fetc
   const connectionId = match
     ? (authFailed ? null : match.connection_id)
     : config.gmail.fallbackConnectionId || null;
+  return {
+    status: authFailed ? "reconnect_required" : connectionId ? "ready" : "connection_required",
+    connectionId,
+    existingConnectionId: match?.connection_id || null
+  };
+}
+
+export async function resolveGmailConnection(config, subject, { fetchImpl = fetch } = {}) {
+  const key = String(subject || "").trim() || "unknown";
+  const cached = connectionCache.get(key);
+  if (cached && Date.now() - cached.at < CONNECTION_CACHE_TTL_MS) return cached.connectionId;
+  const { connectionId } = await getGmailConnectionState(config, key, { fetchImpl });
   if (connectionId) connectionCache.set(key, { connectionId, at: Date.now() });
   return connectionId;
 }
 
 /** Create a Nango Connect session for a subject; returns the hosted connect link. */
-export async function createGmailConnectSession(config, { endUserId, email = "", displayName = "" }, { fetchImpl = fetch } = {}) {
-  const response = await fetchImpl(`${config.nango.serverUrl}/connect/sessions`, {
+export async function createGmailConnectSession(config, { endUserId, email = "", displayName = "", connectionId = null }, { fetchImpl = fetch } = {}) {
+  const reconnect = Boolean(connectionId);
+  const response = await fetchImpl(`${config.nango.serverUrl}/connect/sessions${reconnect ? "/reconnect" : ""}`, {
     method: "POST",
     headers: nangoHeaders(config),
-    body: JSON.stringify({
-      end_user: {
-        id: String(endUserId),
-        ...(email ? { email } : {}),
-        ...(displayName ? { display_name: displayName } : {})
-      },
-      allowed_integrations: [config.gmail.providerConfigKey]
-    })
+    body: JSON.stringify(reconnect
+      ? { connection_id: connectionId, integration_id: config.gmail.providerConfigKey }
+      : {
+          end_user: {
+            id: String(endUserId),
+            ...(email ? { email } : {}),
+            ...(displayName ? { display_name: displayName } : {})
+          },
+          allowed_integrations: [config.gmail.providerConfigKey]
+        })
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {

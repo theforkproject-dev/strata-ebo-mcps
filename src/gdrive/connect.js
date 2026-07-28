@@ -10,7 +10,7 @@
  * same string that arrives as OAuth client_name on minted credentials, which
  * is what lets the MCP side resolve calls back to this connection.
  */
-import { createGdriveConnectSession, gdriveConfigured, resolveGdriveConnection } from "./client.js";
+import { createGdriveConnectSession, gdriveConfigured, getGdriveConnectionState } from "./client.js";
 
 export class GdriveConnect {
   constructor(config) {
@@ -31,10 +31,12 @@ export class GdriveConnect {
 
     if (url.pathname === "/connectors/nango/gdrive/start") {
       try {
+        const state = await getGdriveConnectionState(this.config, endUserId);
         const session = await createGdriveConnectSession(this.config, {
           endUserId,
           email: url.searchParams.get("email") || "",
-          displayName: url.searchParams.get("display_name") || ""
+          displayName: url.searchParams.get("display_name") || "",
+          connectionId: state.existingConnectionId
         });
         if (!session.connectLink) return json(response, 502, { error: "Nango returned no connect link" });
         response.writeHead(302, { location: session.connectLink, "cache-control": "no-store" });
@@ -45,9 +47,9 @@ export class GdriveConnect {
       }
     }
 
-    const connectionId = await resolveGdriveConnection(this.config, endUserId).catch(() => null);
+    const state = await getGdriveConnectionState(this.config, endUserId).catch(() => ({ status: "connection_required" }));
     return json(response, 200, {
-      status: connectionId ? "ready" : "connection_required",
+      status: state.status,
       integration: this.config.gdrive.providerConfigKey,
       end_user_id: endUserId,
       connect_url: `${this.config.publicBaseUrl}/connectors/nango/gdrive/start?end_user_id=${encodeURIComponent(endUserId)}`

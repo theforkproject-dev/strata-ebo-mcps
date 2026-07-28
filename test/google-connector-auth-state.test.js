@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveGdriveConnection } from "../src/gdrive/client.js";
-import { resolveGmailConnection } from "../src/gmail/client.js";
+import { createGdriveConnectSession, getGdriveConnectionState, resolveGdriveConnection } from "../src/gdrive/client.js";
+import { createGmailConnectSession, getGmailConnectionState, resolveGmailConnection } from "../src/gmail/client.js";
 
 function connectionList(connections) {
   return async () => ({
@@ -26,6 +26,19 @@ test("Google Drive auth errors fail closed instead of using the org fallback", a
   });
 
   assert.equal(connectionId, null);
+  const state = await getGdriveConnectionState(config, "user-drive-broken-state", {
+    fetchImpl: connectionList([{
+      provider_config_key: "google-drive",
+      connection_id: "broken-drive-state",
+      end_user: { id: "user-drive-broken-state" },
+      errors: [{ type: "auth" }]
+    }])
+  });
+  assert.deepEqual(state, {
+    status: "reconnect_required",
+    connectionId: null,
+    existingConnectionId: "broken-drive-state"
+  });
 });
 
 test("Gmail auth errors fail closed instead of using the org fallback", async () => {
@@ -43,6 +56,19 @@ test("Gmail auth errors fail closed instead of using the org fallback", async ()
   });
 
   assert.equal(connectionId, null);
+  const state = await getGmailConnectionState(config, "user-mail-broken-state", {
+    fetchImpl: connectionList([{
+      provider_config_key: "google-mail",
+      connection_id: "broken-mail-state",
+      end_user: { id: "user-mail-broken-state" },
+      errors: [{ type: "auth" }]
+    }])
+  });
+  assert.deepEqual(state, {
+    status: "reconnect_required",
+    connectionId: null,
+    existingConnectionId: "broken-mail-state"
+  });
 });
 
 test("healthy exact Google connections still resolve normally", async () => {
@@ -77,4 +103,34 @@ test("healthy exact Google connections still resolve normally", async () => {
     }),
     "user-mail"
   );
+});
+
+test("broken Google connections use Nango reconnect sessions", async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body) });
+    return { ok: true, json: async () => ({ data: { connect_link: "https://connect.nango.dev/reconnect" } }) };
+  };
+  const driveConfig = {
+    nango: { secretKey: "secret", serverUrl: "https://nango.test" },
+    gdrive: { providerConfigKey: "google-drive" }
+  };
+  const mailConfig = {
+    nango: { secretKey: "secret", serverUrl: "https://nango.test" },
+    gmail: { providerConfigKey: "google-mail" }
+  };
+
+  await createGdriveConnectSession(driveConfig, { endUserId: "drive-user", connectionId: "drive-connection" }, { fetchImpl });
+  await createGmailConnectSession(mailConfig, { endUserId: "mail-user", connectionId: "mail-connection" }, { fetchImpl });
+
+  assert.deepEqual(calls, [
+    {
+      url: "https://nango.test/connect/sessions/reconnect",
+      body: { connection_id: "drive-connection", integration_id: "google-drive" }
+    },
+    {
+      url: "https://nango.test/connect/sessions/reconnect",
+      body: { connection_id: "mail-connection", integration_id: "google-mail" }
+    }
+  ]);
 });
