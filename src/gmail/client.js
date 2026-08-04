@@ -22,6 +22,24 @@ function nangoHeaders(config) {
   };
 }
 
+async function gmailConnectionWorks(config, connectionId, { fetchImpl = fetch } = {}) {
+  if (!connectionId) return false;
+  try {
+    const response = await fetchImpl(`${config.nango.serverUrl}/proxy/gmail/v1/users/me/profile`, {
+      headers: {
+        ...nangoHeaders(config),
+        "connection-id": connectionId,
+        "provider-config-key": config.gmail.providerConfigKey
+      },
+      signal: AbortSignal.timeout(config.gmail.timeoutMs || 10_000)
+    });
+    await response.body?.cancel?.().catch(() => {});
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Resolve the caller's Gmail connection: exact end_user.id match on the
  * google-mail integration, tiny TTL cache, env fallback for an org-level demo
@@ -42,7 +60,11 @@ export async function getGmailConnectionState(config, subject, { fetchImpl = fet
   /* Nango retains broken connection rows after refresh credentials become
      terminally invalid. Fail closed, and never fall through to an org demo
      connection when an exact user's connection exists but is broken. */
-  const authFailed = match?.errors?.some((error) => error?.type === "auth");
+  const recordedAuthFailure = match?.errors?.some((error) => error?.type === "auth");
+  /* Nango retains historical auth errors after a connection has recovered.
+     Require a current provider canary to fail before asking the user to
+     reauthorize; a stale error beside a working connection remains ready. */
+  const authFailed = recordedAuthFailure && !(await gmailConnectionWorks(config, match?.connection_id, { fetchImpl }));
   const connectionId = match
     ? (authFailed ? null : match.connection_id)
     : config.gmail.fallbackConnectionId || null;
