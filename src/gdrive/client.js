@@ -23,6 +23,26 @@ function nangoHeaders(config) {
   };
 }
 
+async function gdriveConnectionWorks(config, connectionId, { fetchImpl = fetch } = {}) {
+  if (!connectionId) return false;
+  const url = new URL(`${config.nango.serverUrl}/proxy/drive/v3/about`);
+  url.searchParams.set("fields", "user");
+  try {
+    const response = await fetchImpl(url, {
+      headers: {
+        ...nangoHeaders(config),
+        "connection-id": connectionId,
+        "provider-config-key": config.gdrive.providerConfigKey
+      },
+      signal: AbortSignal.timeout(config.gdrive.timeoutMs || 10_000)
+    });
+    await response.body?.cancel?.().catch(() => {});
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Resolve the caller's Drive connection: exact end_user.id match on the
  * google-drive integration, tiny TTL cache, env fallback for an org-level
@@ -43,7 +63,11 @@ export async function getGdriveConnectionState(config, subject, { fetchImpl = fe
   /* Nango retains broken connection rows after refresh credentials become
      terminally invalid. Fail closed, and never fall through to an org demo
      connection when an exact user's connection exists but is broken. */
-  const authFailed = match?.errors?.some((error) => error?.type === "auth");
+  const recordedAuthFailure = match?.errors?.some((error) => error?.type === "auth");
+  /* Nango retains historical auth errors after a connection has recovered.
+     Require a current provider canary to fail before asking the user to
+     reauthorize; a stale error beside a working connection remains ready. */
+  const authFailed = recordedAuthFailure && !(await gdriveConnectionWorks(config, match?.connection_id, { fetchImpl }));
   const connectionId = match
     ? (authFailed ? null : match.connection_id)
     : config.gdrive.fallbackConnectionId || null;
