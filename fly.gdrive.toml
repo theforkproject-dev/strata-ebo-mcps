@@ -1,9 +1,9 @@
-# Strata Gmail MCP Gateway — read-only Google Drive (Nango → Gmail REST, PER-USER
+# Strata Google Drive MCP Gateway — read-only Google Drive (Nango → Drive REST, PER-USER
 # connections resolved by caller subject), observed-l1. Lane 2 of Agent
 # Anything's integration-lanes.md: the generic Nango bridge, Google Drive manifest #4.
 # Mirrors fly.sharepoint.toml. Secrets (fly secrets set, NEVER here):
 #   NANGO_SECRET_KEY, OAUTH_CONSENT_PASSWORD, MCP_SESSION_SECRET
-#   (optional) NANGO_GDRIVE_CONNECTION_ID — org-level fallback connection
+#   GOOGLE_CONNECTOR_PILOT_SUBJECTS — explicit pilot owners before this deployment
 app = "strata-gdrive-mcp"
 primary_region = "ewr"
 
@@ -25,7 +25,10 @@ primary_region = "ewr"
   OAUTH_ISSUER = "https://strata-gdrive-mcp.fly.dev"
   OAUTH_STORE_PATH = "/data/gdrive-mcp/oauth-store.json"
   GDRIVE_ASSURANCE = "observed-l1"
-  NANGO_GDRIVE_INTEGRATION_ID = "google-drive"
+  NANGO_GDRIVE_INTEGRATION_ID = "google-drive-aa-amotivv"
+  NANGO_GDRIVE_LEGACY_INTEGRATION_ID = "google-drive"
+  GOOGLE_CONNECTOR_ORG_ID = "amotivv"
+  GOOGLE_OAUTH_TESTING = "true"
   TENANT_ID = "default"
   OPERATOR_ID = "operator:amotivv-demo"
 

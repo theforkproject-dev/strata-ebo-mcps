@@ -14,6 +14,9 @@ import { GdriveMcpServer } from "./gdrive-mcp-server.js";
 import { GdriveConnect } from "./gdrive/connect.js";
 import { GmailMcpServer } from "./gmail-mcp-server.js";
 import { GmailConnect } from "./gmail/connect.js";
+import { GcalendarMcpServer } from "./gcalendar-mcp-server.js";
+import { GoogleConnect } from "./google/connect.js";
+import { googleConfigured } from "./google/client.js";
 import { errorResponse, isNotification, parseJsonRpc, successResponse, validateRequest } from "./jsonrpc.js";
 import { SessionManager } from "./session.js";
 import { OAuthServer } from "./oauth/server.js";
@@ -22,12 +25,15 @@ import { NangoSupabaseConnect } from "./nango-supabase/connect.js";
 import { loadCertificateBundle, loadRecipientVerifications } from "./certificates/bundle.js";
 
 const config = loadConfig();
+const googleGateway = ["gmail", "gdrive", "gcalendar"].includes(config.gatewayKind);
 const mcp = config.gatewayKind === "research"
   ? new ResearchMcpServer(config)
   : config.gatewayKind === "gmail"
   ? new GmailMcpServer(config, { resolveClientName: async (clientId) => (await oauthServerRef()?.store?.getClient?.(clientId))?.client_name || null })
   : config.gatewayKind === "gdrive"
   ? new GdriveMcpServer(config, { resolveClientName: async (clientId) => (await oauthServerRef()?.store?.getClient?.(clientId))?.client_name || null })
+  : config.gatewayKind === "gcalendar"
+  ? new GcalendarMcpServer(config, { resolveClientName: async (clientId) => (await oauthServerRef()?.store?.getClient?.(clientId))?.client_name || null })
   : config.gatewayKind === "sharepoint"
   ? new SharepointMcpServer(config)
   : config.gatewayKind === "attio"
@@ -44,6 +50,7 @@ const oauthServer = config.oauth.enabled ? new OAuthServer(config) : null;
 function oauthServerRef() { return oauthServer; } // lazy: the Gmail server is constructed first
 const gmailConnect = config.gatewayKind === "gmail" ? new GmailConnect(config) : null;
 const gdriveConnect = config.gatewayKind === "gdrive" ? new GdriveConnect(config) : null;
+const gcalendarConnect = config.gatewayKind === "gcalendar" ? new GoogleConnect(config, "gcalendar") : null;
 const supabaseConnectorOAuth = config.gatewayKind === "supabase" ? new SupabaseConnectorOAuth(config) : null;
 const nangoSupabaseConnect = config.gatewayKind === "nango-supabase" ? new NangoSupabaseConnect(config) : null;
 
@@ -54,8 +61,11 @@ if (config.sessionSecretWasGenerated) {
 const server = createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/health") {
-      return json(response, 200, {
-        ok: true,
+      const ready = !googleGateway || (googleConfigured(config, config.gatewayKind)
+        && Boolean(oauthServer) && !config.sessionSecretWasGenerated
+        && Boolean(config.oauth.consentPassword || config.oauth.consentPasswordHash));
+      return json(response, ready ? 200 : 503, {
+        ok: ready,
         name: mcp.serverName,
         gateway_kind: config.gatewayKind,
         email_provider: config.gatewayKind === "email" ? config.email.provider : undefined,
@@ -80,14 +90,24 @@ const server = createServer(async (request, response) => {
           integration: config.gmail.providerConfigKey,
           nango_configured: Boolean(config.nango.secretKey),
           per_user_connections: true,
-          fallback_connection_configured: Boolean(config.gmail.fallbackConnectionId)
+          authenticated_connect: true,
+          organization: config.googleConnect.orgId
         } : undefined,
         gdrive_connector: config.gatewayKind === "gdrive" ? {
           assurance: config.gdrive.assurance,
           integration: config.gdrive.providerConfigKey,
           nango_configured: Boolean(config.nango.secretKey),
           per_user_connections: true,
-          fallback_connection_configured: Boolean(config.gdrive.fallbackConnectionId)
+          authenticated_connect: true,
+          organization: config.googleConnect.orgId
+        } : undefined,
+        gcalendar_connector: config.gatewayKind === "gcalendar" ? {
+          assurance: config.gcalendar.assurance,
+          integration: config.gcalendar.providerConfigKey,
+          nango_configured: Boolean(config.nango.secretKey),
+          per_user_connections: true,
+          authenticated_connect: true,
+          organization: config.googleConnect.orgId
         } : undefined,
         sharepoint_connector: config.gatewayKind === "sharepoint" ? {
           assurance: config.sharepoint.assurance,
@@ -124,6 +144,9 @@ const server = createServer(async (request, response) => {
     }
     if (gdriveConnect?.canHandle(request)) {
       return await gdriveConnect.handle(request, response);
+    }
+    if (gcalendarConnect?.canHandle(request)) {
+      return await gcalendarConnect.handle(request, response);
     }
 
     if (oauthServer?.canHandle(request)) {
@@ -257,10 +280,18 @@ async function handleSingle(request, session) {
 }
 
 async function authenticate(request) {
+  // Personal Google data must never inherit the generic demo's anonymous or
+  // shared-bearer admission path (which has no authenticated OAuth client id).
+  if (googleGateway && (!oauthServer || config.sessionSecretWasGenerated)) return { ok: false };
   const sessionId = request.headers["mcp-session-id"];
   const session = sessions.validateSession(sessionId);
   if (session) {
     return { ok: true, sessionId, session };
+  }
+  if (googleGateway) {
+    const token = bearerToken(request);
+    const accessToken = token ? await oauthServer.validateAccessToken(token) : null;
+    return accessToken ? { ok: true, session: oauthSession(accessToken) } : { ok: false };
   }
   if (!config.bearerToken) {
     if (oauthServer) {

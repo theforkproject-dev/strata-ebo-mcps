@@ -1,180 +1,119 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getGoogleConnectionState, resolveGoogleConnection, selectGoogleConnection, createGoogleConnectSession, googleProxy } from "../src/google/client.js";
 
-import { createGdriveConnectSession, getGdriveConnectionState, resolveGdriveConnection } from "../src/gdrive/client.js";
-import { createGmailConnectSession, getGmailConnectionState, resolveGmailConnection } from "../src/gmail/client.js";
-
-function connectionList(connections) {
-  return async () => ({
-    ok: true,
-    json: async () => ({ connections })
-  });
+export const subject = "aa:acme:usr_alice";
+export function config(kind = "gmail") {
+  return { nango: { secretKey: "test-secret", serverUrl: "https://nango.test" },
+    googleConnect: { orgId: "acme", pilotSubjects: [], testingMode: true },
+    [kind]: { providerConfigKey: kind === "gmail" ? "google-mail" : kind === "gdrive" ? "google-drive" : "google-calendar",
+      maxResults: 25, timeoutMs: 1000, assurance: "observed-l1" } };
 }
+export function row(kind = "gmail", extra = {}) {
+  const integration = config(kind)[kind].providerConfigKey;
+  return { provider_config_key: integration, provider: integration, connection_id: "alice-connection",
+    tags: { end_user_id: subject, organization_id: "acme" }, errors: [], ...extra };
+}
+const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const scope = "gmail.readonly drive.readonly calendar.calendarlist.readonly calendar.events.readonly calendar.events.freebusy userinfo.email".split(" ").map((s) => "https://www.googleapis.com/auth/" + s).join(" ");
+const fetcher = (rows, status = 200, error = {}) => async (url) => {
+  const path = new URL(url).pathname;
+  if (path === "/connections") return json({ connections: rows });
+  if (path.startsWith("/connections/")) return json({ ...rows[0], credentials: { type: "OAUTH2", raw: { scope } } });
+  return json(status === 200 ? { emailAddress: "alice@example.test", user: { emailAddress: "alice@example.test" }, email: "alice@example.test" } : error, status);
+};
 
-function connectionWithCanary(connections, canaryStatus) {
-  return async (url) => {
-    if (String(url).endsWith("/connection")) {
-      return { ok: true, status: 200, json: async () => ({ connections }) };
+for (const kind of ["gmail", "gdrive", "gcalendar"]) {
+  test(`${kind}: exact tagged ownership resolves; missing users never receive a demo fallback`, async () => {
+    const cfg = config(kind); cfg[kind].fallbackConnectionId = "unsafe-demo";
+    assert.deepEqual(await resolveGoogleConnection(cfg, kind, subject, { fetchImpl: fetcher([row(kind)]) }),
+      { id: "alice-connection", integrationId: cfg[kind].providerConfigKey, subject });
+    assert.equal(await resolveGoogleConnection(cfg, kind, "aa:acme:usr_bob", { fetchImpl: fetcher([row(kind)]) }), null);
+    await assert.rejects(resolveGoogleConnection(cfg, kind, "aa:other:usr_alice", { fetchImpl: () => { throw Error("Must not fetch"); } }), /forbidden/);
+  });
+  test(`${kind}: historical auth error is verified live; expired grants fail closed`, async () => {
+    const broken = row(kind, { errors: [{ type: "auth" }] });
+    const recovered = await getGoogleConnectionState(config(kind), kind, subject, { fetchImpl: fetcher([broken]) });
+    assert.equal(recovered.status, "ready");
+    for (const status of [401, 424]) {
+      const state = await getGoogleConnectionState(config(kind), kind, subject, { fetchImpl: fetcher([broken], status, { error: { code: "invalid_credentials" } }) });
+      assert.equal(state.status, "reconnect_required"); assert.equal(state.connectionId, null);
+      assert.equal(state.existingConnectionId, "alice-connection"); assert.equal(state.canConnect, true);
     }
-    return {
-      ok: canaryStatus >= 200 && canaryStatus < 300,
-      status: canaryStatus,
-      body: null,
-      json: async () => ({}),
-    };
-  };
+    const unavailable = await getGoogleConnectionState(config(kind), kind, subject, { fetchImpl: fetcher([broken], 503) });
+    assert.equal(unavailable.status, "unavailable"); assert.equal(unavailable.canConnect, false);
+  });
 }
 
-test("Google Drive auth errors fail closed instead of using the org fallback", async () => {
-  const config = {
-    nango: { secretKey: "secret", serverUrl: "https://nango.test" },
-    gdrive: { providerConfigKey: "google-drive", fallbackConnectionId: "org-drive" }
-  };
-  const connectionId = await resolveGdriveConnection(config, "user-drive-broken", {
-    fetchImpl: connectionWithCanary([{
-      provider_config_key: "google-drive",
-      connection_id: "broken-drive",
-      end_user: { id: "user-drive-broken" },
-      errors: [{ type: "auth" }]
-    }], 401)
-  });
-
-  assert.equal(connectionId, null);
-  const state = await getGdriveConnectionState(config, "user-drive-broken-state", {
-    fetchImpl: connectionWithCanary([{
-      provider_config_key: "google-drive",
-      connection_id: "broken-drive-state",
-      end_user: { id: "user-drive-broken-state" },
-      errors: [{ type: "auth" }]
-    }], 401)
-  });
-  assert.deepEqual(state, {
-    status: "reconnect_required",
-    connectionId: null,
-    existingConnectionId: "broken-drive-state"
-  });
+test("legacy owner compatibility does not accept conflicting tags, wrong providers or duplicate identities", () => {
+  const options = { subject, orgId: "acme", integrationId: "google-mail", provider: "google-mail", allowLegacy: true };
+  const legacy = row("gmail", { tags: undefined, end_user: { id: subject } });
+  assert.equal(selectGoogleConnection([legacy], options).connection_id, "alice-connection");
+  const backfilled = { ...legacy, tags: { end_user_id: subject } };
+  assert.equal(selectGoogleConnection([backfilled], options).connection_id, "alice-connection");
+  assert.throws(() => selectGoogleConnection([backfilled], { ...options, allowLegacy: false }), /owner_conflict/);
+  assert.throws(() => selectGoogleConnection([legacy], { ...options, allowLegacy: false }), /owner_conflict/);
+  for (const bad of [row("gmail", { end_user: { id: "aa:acme:usr_bob" } }),
+    row("gmail", { tags: { end_user_id: subject, organization_id: "other" } }), row("gmail", { provider: "google-drive" })]) {
+    assert.throws(() => selectGoogleConnection([bad], options), /owner_conflict/);
+  }
+  assert.throws(() => selectGoogleConnection([row(), row("gmail", { connection_id: "duplicate" })], options), /ambiguous/);
 });
 
-test("Gmail auth errors fail closed instead of using the org fallback", async () => {
-  const config = {
-    nango: { secretKey: "secret", serverUrl: "https://nango.test" },
-    gmail: { providerConfigKey: "google-mail", fallbackConnectionId: "org-mail" }
-  };
-  const connectionId = await resolveGmailConnection(config, "user-mail-broken", {
-    fetchImpl: connectionWithCanary([{
-      provider_config_key: "google-mail",
-      connection_id: "broken-mail",
-      end_user: { id: "user-mail-broken" },
-      errors: [{ type: "auth" }]
-    }], 401)
-  });
-
-  assert.equal(connectionId, null);
-  const state = await getGmailConnectionState(config, "user-mail-broken-state", {
-    fetchImpl: connectionWithCanary([{
-      provider_config_key: "google-mail",
-      connection_id: "broken-mail-state",
-      end_user: { id: "user-mail-broken-state" },
-      errors: [{ type: "auth" }]
-    }], 401)
-  });
-  assert.deepEqual(state, {
-    status: "reconnect_required",
-    connectionId: null,
-    existingConnectionId: "broken-mail-state"
-  });
+test("central pilot selection is explicit and never falls back from a missing central grant", async () => {
+  const cfg = config(); cfg.googleConnect.pilotSubjects = [subject];
+  cfg.gmail.providerConfigKey = "central-mail"; cfg.gmail.legacyProviderConfigKey = "google-mail";
+  const legacyAlice = row("gmail", { tags: undefined, end_user: { id: subject } });
+  const legacyBob = row("gmail", { connection_id: "bob-old", tags: undefined, end_user: { id: "aa:acme:usr_bob" } });
+  const fetchImpl = fetcher([legacyAlice, legacyBob]);
+  assert.equal(await resolveGoogleConnection(cfg, "gmail", subject, { fetchImpl }), null);
+  assert.deepEqual(await resolveGoogleConnection(cfg, "gmail", "aa:acme:usr_bob", { fetchImpl }),
+    { id: "bob-old", integrationId: "google-mail", subject: "aa:acme:usr_bob" });
+  const missing = await getGoogleConnectionState(cfg, "gmail", "aa:acme:usr_new", { fetchImpl });
+  assert.equal(missing.status, "pilot_pending"); assert.equal(missing.canConnect, false);
 });
 
-test("historical Google auth errors do not force reconnect when the live connection works", async () => {
-  const driveConfig = {
-    nango: { secretKey: "secret", serverUrl: "https://nango.test" },
-    gdrive: { providerConfigKey: "google-drive" }
+test("complete zero-based pagination detects a duplicate on a later page", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    const page = Number(new URL(url).searchParams.get("page")); calls.push(page);
+    return json({ connections: page === 0 ? [row(), ...Array.from({ length: 99 }, (_, i) => row("gmail", {
+      connection_id: `other-${i}`, tags: { end_user_id: `aa:acme:usr_other${i}`, organization_id: "acme" } }))]
+      : [row("gmail", { connection_id: "late-duplicate" })] });
   };
-  const mailConfig = {
-    nango: { secretKey: "secret", serverUrl: "https://nango.test" },
-    gmail: { providerConfigKey: "google-mail" }
-  };
-  const driveState = await getGdriveConnectionState(driveConfig, "user-drive-recovered", {
-    fetchImpl: connectionWithCanary([{
-      provider_config_key: "google-drive",
-      connection_id: "recovered-drive",
-      end_user: { id: "user-drive-recovered" },
-      errors: [{ type: "auth" }]
-    }], 200)
-  });
-  const mailState = await getGmailConnectionState(mailConfig, "user-mail-recovered", {
-    fetchImpl: connectionWithCanary([{
-      provider_config_key: "google-mail",
-      connection_id: "recovered-mail",
-      end_user: { id: "user-mail-recovered" },
-      errors: [{ type: "auth" }]
-    }], 200)
-  });
-
-  assert.deepEqual(driveState, { status: "ready", connectionId: "recovered-drive", existingConnectionId: "recovered-drive" });
-  assert.deepEqual(mailState, { status: "ready", connectionId: "recovered-mail", existingConnectionId: "recovered-mail" });
+  await assert.rejects(resolveGoogleConnection(config(), "gmail", subject, { fetchImpl }), /ambiguous/);
+  assert.deepEqual(calls, [0, 1]);
 });
 
-test("healthy exact Google connections still resolve normally", async () => {
-  const driveConfig = {
-    nango: { secretKey: "secret", serverUrl: "https://nango.test" },
-    gdrive: { providerConfigKey: "google-drive", fallbackConnectionId: "org-drive" }
-  };
-  const mailConfig = {
-    nango: { secretKey: "secret", serverUrl: "https://nango.test" },
-    gmail: { providerConfigKey: "google-mail", fallbackConnectionId: "org-mail" }
-  };
-
-  assert.equal(
-    await resolveGdriveConnection(driveConfig, "user-drive-healthy", {
-      fetchImpl: connectionList([{
-        provider_config_key: "google-drive",
-        connection_id: "user-drive",
-        end_user: { id: "user-drive-healthy" },
-        errors: []
-      }])
-    }),
-    "user-drive"
-  );
-  assert.equal(
-    await resolveGmailConnection(mailConfig, "user-mail-healthy", {
-      fetchImpl: connectionList([{
-        provider_config_key: "google-mail",
-        connection_id: "user-mail",
-        end_user: { id: "user-mail-healthy" },
-        errors: []
-      }])
-    }),
-    "user-mail"
-  );
-});
-
-test("broken Google connections use Nango reconnect sessions", async () => {
+test("new sessions bind trusted owner tags; reconnect verifies the exact owner before dispatch", async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {
-    calls.push({ url, body: JSON.parse(options.body) });
-    return { ok: true, json: async () => ({ data: { connect_link: "https://connect.nango.dev/reconnect" } }) };
+    if (new URL(url).pathname === "/connections") return json({ connections: [row()] });
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return json({ data: { connect_link: "https://connect.nango.dev/?session_token=mock", expires_at: new Date(Date.now() + 1800000).toISOString() } });
   };
-  const driveConfig = {
-    nango: { secretKey: "secret", serverUrl: "https://nango.test" },
-    gdrive: { providerConfigKey: "google-drive" }
-  };
-  const mailConfig = {
-    nango: { secretKey: "secret", serverUrl: "https://nango.test" },
-    gmail: { providerConfigKey: "google-mail" }
-  };
+  await createGoogleConnectSession(config(), "gmail", { subject, email: "alice@example.test" }, { fetchImpl });
+  assert.deepEqual(calls[0].body.allowed_integrations, ["google-mail"]);
+  assert.equal(calls[0].body.tags.end_user_id, subject); assert.equal(calls[0].body.tags.organization_id, "acme");
+  await createGoogleConnectSession(config(), "gmail", { subject, connectionId: "alice-connection" }, { fetchImpl });
+  assert.equal(calls[1].url, "https://nango.test/connect/sessions/reconnect");
+  await assert.rejects(createGoogleConnectSession(config(), "gmail", { subject, connectionId: "somebody-else" }, { fetchImpl }), /owner_mismatch/);
+  assert.equal(calls.length, 2);
+});
 
-  await createGdriveConnectSession(driveConfig, { endUserId: "drive-user", connectionId: "drive-connection" }, { fetchImpl });
-  await createGmailConnectSession(mailConfig, { endUserId: "mail-user", connectionId: "mail-connection" }, { fetchImpl });
+test("read proxy rejects mutation and normalized path escape before network access", async () => {
+  const cfg = config("gcalendar"), connection = { id: "c", integrationId: "google-calendar", subject };
+  const fetchImpl = () => { throw new Error("Unexpected network access"); };
+  await assert.rejects(googleProxy(cfg, "gcalendar", { connection, path: "/calendar/v3/calendars/primary/events", body: {} }, { fetchImpl }), /forbidden/);
+  await assert.rejects(googleProxy(cfg, "gcalendar", { connection, path: "/calendar/v3/../../oauth2/v2/userinfo" }, { fetchImpl }), /forbidden/);
+});
 
-  assert.deepEqual(calls, [
-    {
-      url: "https://nango.test/connect/sessions/reconnect",
-      body: { connection_id: "drive-connection", integration_id: "google-drive" }
-    },
-    {
-      url: "https://nango.test/connect/sessions/reconnect",
-      body: { connection_id: "mail-connection", integration_id: "google-mail" }
-    }
-  ]);
+test("central readiness requires the actual service grants, not only a successful sign-in", async () => {
+  for (const grant of ["https://www.googleapis.com/auth/userinfo.email", `${scope} https://mail.google.com/`]) {
+    const fetchImpl = async (url) => new URL(url).pathname === "/connections" ? json({ connections: [row()] })
+      : json({ ...row(), credentials: { type: "OAUTH2", raw: { scope: grant } } });
+    const state = await getGoogleConnectionState(config(), "gmail", subject, { fetchImpl });
+    assert.equal(state.connectionId, null);
+    assert.equal(state.status, grant.includes("https://mail.google.com/") ? "unavailable" : "reconnect_required");
+  }
 });
