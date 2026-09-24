@@ -69,7 +69,7 @@ export async function callGmailTool({ name, args = {}, config, subject }) {
     return {
       ok: false,
       error: `No usable Gmail connection for this user (${subject}). Connect or reconnect Gmail from the workspace Connectors screen, then retry.`,
-      connect_hint: `${config.publicBaseUrl}/connectors/nango/gmail/status?end_user_id=${encodeURIComponent(subject)}`
+      connect_hint: "Use the Connect/Reconnect prompt in your Personal Assistant."
     };
   }
   switch (name) {
@@ -85,7 +85,7 @@ export async function callGmailTool({ name, args = {}, config, subject }) {
 }
 
 async function gatewayStatus(config, subject) {
-  let state = { status: "connection_required", connectionId: null };
+  let state = { status: "unavailable", connectionId: null };
   let resolveError = null;
   if (gmailConfigured(config)) {
     try {
@@ -98,9 +98,11 @@ async function gatewayStatus(config, subject) {
     ok: true,
     status: gmailConfigured(config) ? state.status : "not_configured",
     nango_configured: Boolean(config.nango.secretKey),
-    integration: config.gmail.providerConfigKey,
+    integration: state.integrationId || null,
     subject,
     user_connected: Boolean(state.connectionId),
+    account_email: state.accountEmail || null,
+    testing_mode: state.testingMode === true,
     assurance: config.gmail.assurance,
     sensitivity: "read-only",
     ...(resolveError ? { resolve_error: resolveError } : {})

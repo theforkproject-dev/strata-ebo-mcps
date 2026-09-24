@@ -59,8 +59,20 @@ export function loadConfig(env = process.env) {
       baseUrl: (env.ATTIO_BASE_URL || "https://api.attio.com").replace(/\/$/, ""),
       assurance: env.ATTIO_ASSURANCE || "observed-l1",
     },
+    googleConnect: {
+      orgId: String(env.GOOGLE_CONNECTOR_ORG_ID || "").trim(),
+      pilotSubjects: parseCsv(env.GOOGLE_CONNECTOR_PILOT_SUBJECTS || ""),
+      testingMode: truthy(env.GOOGLE_OAUTH_TESTING),
+      connectOrigin: "https://connect.nango.dev"
+    },
     gmail: loadGmailConfig(env),
     gdrive: loadGdriveConfig(env),
+    gcalendar: {
+      providerConfigKey: env.NANGO_GCALENDAR_INTEGRATION_ID || "",
+      maxResults: Math.min(100, positiveInt(env.GCALENDAR_MAX_RESULTS || 25, "GCALENDAR_MAX_RESULTS")),
+      timeoutMs: positiveInt(env.GCALENDAR_TIMEOUT_MS || 20000, "GCALENDAR_TIMEOUT_MS"),
+      assurance: env.GCALENDAR_ASSURANCE || "observed-l1"
+    },
     kojimem: loadKojimemConfig(env),
     certificateBundle: {
       backend: env.CERTIFICATE_BUNDLE_STORE_BACKEND || "local",
@@ -244,7 +256,7 @@ function loadSharepointConfig(env) {
 function loadGdriveConfig(env) {
   return {
     providerConfigKey: env.NANGO_GDRIVE_INTEGRATION_ID || env.NANGO_GDRIVE_PROVIDER_CONFIG_KEY || "google-drive",
-    fallbackConnectionId: env.NANGO_GDRIVE_CONNECTION_ID || "",
+    legacyProviderConfigKey: env.NANGO_GDRIVE_LEGACY_INTEGRATION_ID || "",
     maxResults: positiveInt(env.GDRIVE_MAX_RESULTS || 25, "GDRIVE_MAX_RESULTS"),
     timeoutMs: positiveInt(env.GDRIVE_TIMEOUT_MS || 30000, "GDRIVE_TIMEOUT_MS"),
     assurance: env.GDRIVE_ASSURANCE || "observed-l1"
@@ -254,7 +266,7 @@ function loadGdriveConfig(env) {
 function loadGmailConfig(env) {
   return {
     providerConfigKey: env.NANGO_GMAIL_INTEGRATION_ID || env.NANGO_GMAIL_PROVIDER_CONFIG_KEY || "google-mail",
-    fallbackConnectionId: env.NANGO_GMAIL_CONNECTION_ID || "",
+    legacyProviderConfigKey: env.NANGO_GMAIL_LEGACY_INTEGRATION_ID || "",
     maxResults: positiveInt(env.GMAIL_MAX_RESULTS || 25, "GMAIL_MAX_RESULTS"),
     bodyMaxChars: positiveInt(env.GMAIL_BODY_MAX_CHARS || 40000, "GMAIL_BODY_MAX_CHARS"),
     timeoutMs: positiveInt(env.GMAIL_TIMEOUT_MS || 30000, "GMAIL_TIMEOUT_MS"),

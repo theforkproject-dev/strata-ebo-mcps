@@ -99,7 +99,7 @@ export async function callGdriveTool({ name, args = {}, config, subject }) {
     return {
       ok: false,
       error: `No usable Google Drive connection for this user (${subject}). Connect or reconnect Google Drive from the workspace Connectors screen, then retry.`,
-      connect_hint: `${config.publicBaseUrl}/connectors/nango/gdrive/status?end_user_id=${encodeURIComponent(subject)}`
+      connect_hint: "Use the Connect/Reconnect prompt in your Personal Assistant."
     };
   }
   switch (name) {
@@ -118,14 +118,16 @@ async function gatewayStatus(config, subject) {
   if (!gdriveConfigured(config)) {
     return { ok: true, status: "not_configured", nango_configured: false, subject, sensitivity: "read-only" };
   }
-  const state = await getGdriveConnectionState(config, subject).catch(() => ({ status: "connection_required", connectionId: null }));
+  const state = await getGdriveConnectionState(config, subject).catch(() => ({ status: "unavailable", connectionId: null }));
   return {
     ok: true,
     status: state.status,
     nango_configured: true,
-    integration: config.gdrive.providerConfigKey,
+    integration: state.integrationId || null,
     subject,
     user_connected: Boolean(state.connectionId),
+    account_email: state.accountEmail || null,
+    testing_mode: state.testingMode === true,
     assurance: config.gdrive.assurance,
     sensitivity: "read-only"
   };

@@ -1,0 +1,45 @@
+# amotivv read-only Calendar pilot. Secrets: NANGO_SECRET_KEY,
+# OAUTH_CONSENT_PASSWORD, MCP_SESSION_SECRET, GOOGLE_CONNECTOR_PILOT_SUBJECTS.
+app = "strata-gcalendar-mcp"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  GATEWAY_KIND = "gcalendar"
+  DATA_DIR = "/data/gcalendar-mcp"
+  PUBLIC_BASE_URL = "https://strata-gcalendar-mcp.fly.dev"
+  OAUTH_ISSUER = "https://strata-gcalendar-mcp.fly.dev"
+  OAUTH_STORE_PATH = "/data/gcalendar-mcp/oauth-store.json"
+  OAUTH_ACCESS_TOKEN_TTL_SECONDS = "86400"
+  OAUTH_REFRESH_TOKEN_TTL_SECONDS = "7776000"
+  NANGO_GCALENDAR_INTEGRATION_ID = "google-calendar-aa-amotivv"
+  GOOGLE_CONNECTOR_ORG_ID = "amotivv"
+  GOOGLE_OAUTH_TESTING = "true"
+  GCALENDAR_ASSURANCE = "observed-l1"
+  TENANT_ID = "amotivv"
+
+[[mounts]]
+  source = "strata_gcalendar_mcp_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
